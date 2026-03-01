@@ -2,8 +2,8 @@
 import os
 
 # ---------- OWNER & ADMINS ----------
-# Hardcoded values (ya environment variables se bhi le sakte ho)
-OWNER_ID = int(os.getenv("OWNER_ID", 8104850843))  # Replace with your owner ID
+# Hardcoded values with environment variable fallback
+OWNER_ID = int(os.getenv("OWNER_ID", 8104850843))          # Replace with your owner ID if needed
 ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "5987905091").split(",")]  # Extra admins
 
 # ---------- FORCE JOIN CHANNELS ----------
@@ -30,7 +30,7 @@ APIS = {
         'log_channel': -1003482423742,
         'desc': 'Mobile number lookup',
         'blacklist': [
-            'Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444.'
+            'Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444'
         ]
     },
     'ifsc': {
