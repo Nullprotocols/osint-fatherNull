@@ -1,4 +1,3 @@
-# main.py
 import logging
 import os
 import json
@@ -9,10 +8,9 @@ import csv
 import tempfile
 import shutil
 import re
+import aiosqlite  # <-- IMPORT ADDED
 from datetime import datetime, timedelta
 from threading import Thread
-
-import aiosqlite  # ✅ IMPORT MISSING THA - YEH ADD KIYA
 
 from flask import Flask
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -52,10 +50,6 @@ from database import (
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
-# ✅ TOKEN CHECK – AGAR NAHI MILA TO ERROR DEKAR RUK JAYEGA
-if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable not set!")
-
 # Load config
 OWNER_ID = config.OWNER_ID
 ADMIN_IDS = config.ADMIN_IDS
@@ -83,6 +77,7 @@ def run():
 
 def keep_alive():
     t = Thread(target=run)
+    t.daemon = True
     t.start()
 
 # --- FSM States ---
@@ -135,7 +130,6 @@ def clean_api_response(data, blacklist=None):
     if isinstance(data, dict):
         cleaned = {}
         for key, value in data.items():
-            # Check key for unwanted strings
             if any(unwanted.lower() in key.lower() for unwanted in blacklist):
                 continue
             if isinstance(value, str):
@@ -314,6 +308,9 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
     if await is_user_banned(user_id):
         return
     user = await get_user(user_id)
+    if not user:
+        await message.reply("❌ User not found. Please /start first.")
+        return
     admin_level = await is_user_admin(user_id)
     is_premium = await is_user_premium(user_id)
 
@@ -335,33 +332,38 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
     json_size = len(json.dumps(raw_data, ensure_ascii=False))
     should_send_as_file = json_size > 3000 or (isinstance(raw_data, dict) and any(isinstance(v, list) and len(v) > 10 for v in raw_data.values()))
 
-    if should_send_as_file:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
-            json.dump(raw_data, f, indent=4, ensure_ascii=False)
-            temp_file = f.name
-        txt_file = create_readable_txt_file(raw_data, api_type, input_data)
-        try:
-            await message.reply_document(
-                FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
-                caption=f"🔍 <b>{api_type.upper()} Lookup Results</b>\nInput: <code>{input_data}</code>",
-                parse_mode="HTML"
-            )
-            await message.reply_document(
-                FSInputFile(txt_file, filename=f"{api_type}_{input_data}_readable.txt"),
-                caption="📄 Readable Text Format"
-            )
-        except Exception as e:
-            logging.error(f"File send error: {e}")
-        finally:
+    temp_file = None
+    txt_file = None
+    try:
+        if should_send_as_file:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+                json.dump(raw_data, f, indent=4, ensure_ascii=False)
+                temp_file = f.name
+            txt_file = create_readable_txt_file(raw_data, api_type, input_data)
+            try:
+                await message.reply_document(
+                    FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
+                    caption=f"🔍 <b>{api_type.upper()} Lookup Results</b>\nInput: <code>{input_data}</code>",
+                    parse_mode="HTML"
+                )
+                await message.reply_document(
+                    FSInputFile(txt_file, filename=f"{api_type}_{input_data}_readable.txt"),
+                    caption="📄 Readable Text Format"
+                )
+            except Exception as e:
+                logging.error(f"File send error: {e}")
+        else:
+            colored = f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n📊 Input: <code>{input_data}</code>\n📅 Date: {datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
+            if is_truncated:
+                colored += "⚠️ <i>Response truncated</i>\n\n"
+            colored += f"<pre><code class=\"language-json\">{formatted_json}</code></pre>\n\n"
+            colored += f"👨‍💻 Developer: {config.DEV_USERNAME}\n⚡ Powered by: {config.POWERED_BY}"
+            await message.reply(colored, parse_mode="HTML")
+    finally:
+        if temp_file and os.path.exists(temp_file):
             os.unlink(temp_file)
+        if txt_file and os.path.exists(txt_file):
             os.unlink(txt_file)
-    else:
-        colored = f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n📊 Input: <code>{input_data}</code>\n📅 Date: {datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
-        if is_truncated:
-            colored += "⚠️ <i>Response truncated</i>\n\n"
-        colored += f"<pre><code class=\"language-json\">{formatted_json}</code></pre>\n\n"
-        colored += f"👨‍💻 Developer: {config.DEV_USERNAME}\n⚡ Powered by: {config.POWERED_BY}"
-        await message.reply(colored, parse_mode="HTML")
 
     # Log lookup
     await log_lookup(user_id, api_type, input_data, json.dumps(raw_data, indent=2)[:1000])
@@ -372,7 +374,7 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
     log_channel = api_info.get('log_channel') if api_info else None
     if log_channel:
         try:
-            if should_send_as_file and 'temp_file' in locals() and os.path.exists(temp_file):
+            if should_send_as_file and temp_file and os.path.exists(temp_file):
                 await bot.send_document(
                     chat_id=log_channel,
                     document=FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
@@ -522,14 +524,11 @@ async def cancel_offer_redeem(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(Form.waiting_for_offer_code)
 async def process_offer_code(message: types.Message, state: FSMContext):
     code = message.text.strip().upper()
-    # For simplicity, we'll just notify admin; actual discount can be applied at purchase time.
-    # But we can store in user session.
     await message.answer("✅ Offer code accepted! Now select a plan to apply discount.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Weekly", callback_data="buy_weekly_offer")],
         [InlineKeyboardButton(text="📆 Monthly", callback_data="buy_monthly_offer")]
     ]))
     await state.update_data(offer_code=code)
-    # We won't fully implement discount logic here due to complexity; can be added later.
     await state.clear()
 
 # --- Refer & Earn ---
@@ -994,7 +993,7 @@ async def manual_backup_callback(callback: types.CallbackQuery):
         await callback.answer("Unauthorized", show_alert=True)
         return
     await callback.message.edit_text("🔄 Taking backup...")
-    await daily_backup()
+    await daily_backup()  # <-- AWAIT ADDED
     await callback.message.edit_text("✅ Backup completed and sent to backup channel.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
 
 # --- Daily Backup Function (for scheduler) ---
@@ -1057,15 +1056,5 @@ async def main():
     print("🚀 Bot started...")
     await dp.start_polling(bot)
 
-# ✅ AUTO-RESTART LOOP – AGAR BOT CRASH HUA TO 5 SECOND MEIN RESTART
 if __name__ == "__main__":
-    while True:
-        try:
-            asyncio.run(main())
-        except KeyboardInterrupt:
-            print("Bot stopped by user")
-            break
-        except Exception as e:
-            print(f"❌ Bot crashed: {e}. Restarting in 5 seconds...")
-            import time
-            time.sleep(5)
+    asyncio.run(main())
