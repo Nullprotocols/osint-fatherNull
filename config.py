@@ -1,24 +1,17 @@
+# config.py
 # Owner and Admins (Hardcoded)
-# Apna Telegram user ID yahan daalo (numeric ID)
-OWNER_ID = 8104850843   # <-- YAHAN APNA ID DAALO
+OWNER_ID = 8104850843
+ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins
 
-# Extra admin IDs (owner ke alawa)
-ADMIN_IDS = [5987905091]   # <-- YAHAN ADMIN IDS DAALO
-
-# Force Join Channels (Channel IDs and Invite Links)
-CHANNELS = [
-    -1003090922367,
-    -1003698567122,
-    -1003672015073
-]
-
+# Force Join Channels (IDs and Links)
+CHANNELS = [-1003090922367, -1003698567122, -1003672015073]
 CHANNEL_LINKS = [
     "https://t.me/all_data_here",
     "https://t.me/osint_lookup",
     "https://t.me/legend_chats_osint"
 ]
 
-# APIs – Har API ki poori info (URL, param, log channel, blacklist)
+# APIs – Har API ki poori info
 APIS = {
     'num': {
         'url': 'https://num-free-rootx-jai-shree-ram-14-day.vercel.app/?key=lundkinger&number={}',
@@ -26,6 +19,8 @@ APIS = {
         'log_channel': -1003482423742,
         'desc': 'Mobile number lookup',
         'blacklist': [
+            'Dm to buy access', 'Owner', '@Kon_Hu_Mai',
+            '@Simpleguy444', 'Simpleguy444',
             'Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444'
         ]
     },
