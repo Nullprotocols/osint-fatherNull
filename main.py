@@ -9,9 +9,10 @@ import csv
 import tempfile
 import shutil
 import re
-import signal
 from datetime import datetime, timedelta
 from threading import Thread
+
+import aiosqlite  # <-- IMPORT MISSING THA - YEH ADD KIYA
 
 from flask import Flask
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -45,13 +46,15 @@ from database import (
     update_last_active, get_leaderboard,
     bulk_update_credits, set_user_premium, remove_user_premium, is_user_premium,
     get_plan_price, update_plan_price,
-    create_discount_code, redeem_discount_code,
-    close_db, get_pool   # <-- new imports
+    create_discount_code, redeem_discount_code
 )
-import aiofiles  # <-- for async file operations
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+
+# ✅ TOKEN CHECK – AGAR NAHI MILA TO ERROR DEKAR RUK JAYEGA
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN environment variable not set!")
 
 # Load config
 OWNER_ID = config.OWNER_ID
@@ -74,10 +77,6 @@ app = Flask(__name__)
 def home():
     return "Bot is running!"
 
-@app.route('/health')  # <-- health check endpoint added
-def health():
-    return "OK", 200
-
 def run():
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port)
@@ -85,12 +84,6 @@ def run():
 def keep_alive():
     t = Thread(target=run)
     t.start()
-
-# --- Shutdown handler ---
-async def shutdown():
-    logging.info("Shutting down bot...")
-    await close_db()
-    await bot.session.close()
 
 # --- FSM States ---
 class Form(StatesGroup):
@@ -1007,36 +1000,31 @@ async def manual_backup_callback(callback: types.CallbackQuery):
 # --- Daily Backup Function (for scheduler) ---
 async def daily_backup():
     try:
-        # Export users table to CSV
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            users = await conn.fetch("SELECT * FROM users")
-        
+        db_backup = f"backup_db_{datetime.now().strftime('%Y%m%d')}.db"
+        shutil.copy2("nullprotocol.db", db_backup)
         csv_backup = f"backup_users_{datetime.now().strftime('%Y%m%d')}.csv"
-        async with aiofiles.open(csv_backup, 'w', newline='', encoding='utf-8') as f:
-            # Write header
-            if users:
-                header = list(users[0].keys())
-                await f.write(','.join(header) + '\n')
-                for row in users:
-                    line = ','.join(str(v) if v is not None else '' for v in row.values())
-                    await f.write(line + '\n')
-        
-        # Stats backup
+        async with aiosqlite.connect("nullprotocol.db") as db:
+            async with db.execute("SELECT * FROM users") as cursor:
+                rows = await cursor.fetchall()
+                col_names = [description[0] for description in cursor.description]
+        with open(csv_backup, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(col_names)
+            writer.writerows(rows)
         txt_backup = f"backup_stats_{datetime.now().strftime('%Y%m%d')}.txt"
         stats = await get_bot_stats()
         total_lookups = await get_total_lookups()
-        async with aiofiles.open(txt_backup, 'w', encoding='utf-8') as f:
-            await f.write(f"Backup Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            await f.write(f"Total Users: {stats['total_users']}\n")
-            await f.write(f"Active Users: {stats['active_users']}\n")
-            await f.write(f"Total Credits: {stats['total_credits']}\n")
-            await f.write(f"Credits Distributed: {stats['credits_distributed']}\n")
-            await f.write(f"Total Lookups: {total_lookups}\n")
-        
+        with open(txt_backup, 'w', encoding='utf-8') as f:
+            f.write(f"Backup Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total Users: {stats['total_users']}\n")
+            f.write(f"Active Users: {stats['active_users']}\n")
+            f.write(f"Total Credits: {stats['total_credits']}\n")
+            f.write(f"Credits Distributed: {stats['credits_distributed']}\n")
+            f.write(f"Total Lookups: {total_lookups}\n")
+        await bot.send_document(BACKUP_CHANNEL, FSInputFile(db_backup))
         await bot.send_document(BACKUP_CHANNEL, FSInputFile(csv_backup))
         await bot.send_document(BACKUP_CHANNEL, FSInputFile(txt_backup))
-        
+        os.remove(db_backup)
         os.remove(csv_backup)
         os.remove(txt_backup)
         logging.info("Daily backup successful.")
@@ -1058,24 +1046,26 @@ async def cancel_command(message: types.Message, state: FSMContext):
 async def main():
     keep_alive()
     await init_db()
-    
-    # Setup shutdown handler
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
-    
     # Initialize static admins
     for aid in ADMIN_IDS:
         if aid != OWNER_ID:
             await add_admin(aid)
-    
     # Schedule daily backup at 00:00 UTC
     scheduler = AsyncIOScheduler()
     scheduler.add_job(daily_backup, CronTrigger(hour=0, minute=0))
     scheduler.start()
-    
     print("🚀 Bot started...")
     await dp.start_polling(bot)
 
+# ✅ YAHAN SE CHANGE SHURU HOTA HAI – RESTART LOOP WITH ERROR HANDLING
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            print("Bot stopped by user")
+            break
+        except Exception as e:
+            print(f"❌ Bot crashed: {e}. Restarting in 5 seconds...")
+            import time
+            time.sleep(5)
