@@ -1,28 +1,24 @@
-# config.py
-import os
+# Owner and Admins (Hardcoded)
+# Apna Telegram user ID yahan daalo (numeric ID)
+OWNER_ID = 8104850843   # <-- YAHAN APNA ID DAALO
 
-# ---------- OWNER & ADMINS ----------
-# Hardcoded values with environment variable fallback
-OWNER_ID = int(os.getenv("OWNER_ID", 8104850843))          # Replace with your owner ID if needed
-ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "5987905091").split(",")]  # Extra admins
+# Extra admin IDs (owner ke alawa)
+ADMIN_IDS = [5987905091]   # <-- YAHAN ADMIN IDS DAALO
 
-# ---------- FORCE JOIN CHANNELS ----------
-# Channel IDs (negative values for private/supergroups)
+# Force Join Channels (Channel IDs and Invite Links)
 CHANNELS = [
-    int(os.getenv("CHANNEL1", -1003090922367)),
-    int(os.getenv("CHANNEL2", -1003698567122)),
-    int(os.getenv("CHANNEL3", -1003672015073))
+    -1003090922367,
+    -1003698567122,
+    -1003672015073
 ]
 
-# Channel invite links
 CHANNEL_LINKS = [
-    os.getenv("CHANNEL_LINK1", "https://t.me/all_data_here"),
-    os.getenv("CHANNEL_LINK2", "https://t.me/osint_lookup"),
-    os.getenv("CHANNEL_LINK3", "https://t.me/legend_chats_osint")
+    "https://t.me/all_data_here",
+    "https://t.me/osint_lookup",
+    "https://t.me/legend_chats_osint"
 ]
 
-# ---------- APIS ----------
-# Har API ki poori info – yahan kuch bhi change mat karna agar APIs kaam kar rahe hain
+# APIs – Har API ki poori info (URL, param, log channel, blacklist)
 APIS = {
     'num': {
         'url': 'https://num-free-rootx-jai-shree-ram-14-day.vercel.app/?key=lundkinger&number={}',
@@ -112,11 +108,9 @@ APIS = {
     },
 }
 
-# ---------- BRANDING ----------
 # Developer branding (response mein add hoga)
-DEV_USERNAME = os.getenv("DEV_USERNAME", "@Nullprotocol_X")
-POWERED_BY = os.getenv("POWERED_BY", "NULL PROTOCOL")
+DEV_USERNAME = "@Nullprotocol_X"
+POWERED_BY = "NULL PROTOCOL"
 
-# ---------- BACKUP CHANNEL ----------
-# Daily backup yahan bhejna hai
-BACKUP_CHANNEL = int(os.getenv("BACKUP_CHANNEL", -1003740236326))
+# Backup channel (daily backup yahan bhejna hai)
+BACKUP_CHANNEL = -1003740236326
