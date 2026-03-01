@@ -69,7 +69,7 @@ async def init_db():
                 UNIQUE(user_id, code)
             )
         """)
-        # Stats table
+        # Stats table (optional)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS stats (
                 date TEXT PRIMARY KEY,
@@ -258,9 +258,11 @@ async def create_redeem_code(code, amount, max_uses, expiry_minutes=None):
 
 async def redeem_code_db(user_id, code):
     async with aiosqlite.connect(DB_NAME) as db:
+        # Check if already claimed
         async with db.execute("SELECT 1 FROM redeem_logs WHERE user_id = ? AND code = ?", (user_id, code)) as cursor:
             if await cursor.fetchone():
                 return "already_claimed"
+        # Get code details
         async with db.execute("SELECT amount, max_uses, current_uses, expiry_minutes, created_date, is_active FROM redeem_codes WHERE code = ?", (code,)) as cursor:
             data = await cursor.fetchone()
         if not data:
