@@ -1,16 +1,17 @@
+# main.py
 import logging
 import os
 import json
 import asyncio
 import httpx
-import secrets
 import csv
 import tempfile
 import shutil
 import re
-import aiosqlite
 from datetime import datetime, timedelta
 from threading import Thread
+
+import aiosqlite  # Required for daily_backup
 
 from flask import Flask
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -44,11 +45,14 @@ from database import (
     update_last_active, get_leaderboard,
     bulk_update_credits, set_user_premium, remove_user_premium, is_user_premium,
     get_plan_price, update_plan_price,
-    create_discount_code, redeem_discount_code
+    create_discount_code
 )
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN environment variable not set!")
 
 # Load config
 OWNER_ID = config.OWNER_ID
@@ -62,18 +66,21 @@ BACKUP_CHANNEL = config.BACKUP_CHANNEL
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 # --- Flask Keep-Alive for Render ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running with Python 3.14.3!"
+    return "Bot is running!"
 
 def run():
     port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
@@ -162,7 +169,6 @@ def create_readable_txt_file(raw_data, api_type, input_data):
         f.write(f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"🔎 Input: {input_data}\n")
         f.write("="*50 + "\n\n")
-        
         def write_readable(obj, indent=0):
             if isinstance(obj, dict):
                 for key, value in obj.items():
@@ -182,7 +188,6 @@ def create_readable_txt_file(raw_data, api_type, input_data):
                         f.write(f"{item}\n")
             else:
                 f.write(f"{obj}\n")
-        
         write_readable(raw_data)
         f.write("\n" + "="*50 + "\n")
         f.write(f"👨‍💻 Developer: {config.DEV_USERNAME}\n")
@@ -216,7 +221,8 @@ async def check_membership(user_id):
             if member.status in ['left', 'kicked', 'restricted']:
                 return False
         return True
-    except Exception:
+    except Exception as e:
+        logging.error(f"Membership check error for {user_id}: {e}")
         return False
 
 def get_join_keyboard():
@@ -279,7 +285,7 @@ def get_main_menu(user_id):
 async def fetch_api_data(api_type, input_data, user_id=None):
     api_info = APIS.get(api_type)
     if not api_info or not api_info.get('url'):
-        return {"error": "API not configured"}
+        return {"error": "API not configured", **get_branding()}
     try:
         async with httpx.AsyncClient() as client:
             url = api_info['url'].format(input_data)
@@ -312,7 +318,7 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
         return
     user = await get_user(user_id)
     if not user:
-        await message.reply("❌ User not found. Please /start first.")
+        await message.reply("❌ <b>User not found!</b>", parse_mode="HTML")
         return
     admin_level = await is_user_admin(user_id)
     is_premium = await is_user_premium(user_id)
@@ -321,9 +327,8 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
         if user[2] < 1:
             await message.reply("❌ <b>Insufficient Credits!</b>", parse_mode="HTML")
             return
-    # Deduct credit if not admin and not premium
-    if not admin_level and not is_premium:
-        await update_credits(user_id, -1)
+        else:
+            await update_credits(user_id, -1)
 
     status_msg = await message.reply("🔄 <b>Fetching Data...</b>", parse_mode="HTML")
     raw_data = await fetch_api_data(api_type, input_data, user_id)
@@ -335,61 +340,57 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
     json_size = len(json.dumps(raw_data, ensure_ascii=False))
     should_send_as_file = json_size > 3000 or (isinstance(raw_data, dict) and any(isinstance(v, list) and len(v) > 10 for v in raw_data.values()))
 
-    temp_file = None
-    txt_file = None
-    try:
-        if should_send_as_file:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
-                json.dump(raw_data, f, indent=4, ensure_ascii=False)
-                temp_file = f.name
-            txt_file = create_readable_txt_file(raw_data, api_type, input_data)
-            try:
-                await message.reply_document(
-                    FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
-                    caption=f"🔍 <b>{api_type.upper()} Lookup Results</b>\nInput: <code>{input_data}</code>",
-                    parse_mode="HTML"
-                )
-                await message.reply_document(
-                    FSInputFile(txt_file, filename=f"{api_type}_{input_data}_readable.txt"),
-                    caption="📄 Readable Text Format"
-                )
-            except Exception as e:
-                logging.error(f"File send error: {e}")
-        else:
-            colored = f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n📊 Input: <code>{input_data}</code>\n📅 Date: {datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
-            if is_truncated:
-                colored += "⚠️ <i>Response truncated</i>\n\n"
-            colored += f"<pre><code class=\"language-json\">{formatted_json}</code></pre>\n\n"
-            colored += f"👨‍💻 Developer: {config.DEV_USERNAME}\n⚡ Powered by: {config.POWERED_BY}"
-            await message.reply(colored, parse_mode="HTML")
-    finally:
-        if temp_file and os.path.exists(temp_file):
+    if should_send_as_file:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump(raw_data, f, indent=4, ensure_ascii=False)
+            temp_file = f.name
+        txt_file = create_readable_txt_file(raw_data, api_type, input_data)
+        try:
+            await message.reply_document(
+                FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
+                caption=f"🔍 <b>{api_type.upper()} Lookup Results</b>\nInput: <code>{input_data}</code>",
+                parse_mode="HTML"
+            )
+            await message.reply_document(
+                FSInputFile(txt_file, filename=f"{api_type}_{input_data}_readable.txt"),
+                caption="📄 Readable Text Format"
+            )
+        except Exception as e:
+            logging.error(f"File send error: {e}")
+        finally:
             os.unlink(temp_file)
-        if txt_file and os.path.exists(txt_file):
             os.unlink(txt_file)
+    else:
+        colored = f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n📊 Input: <code>{input_data}</code>\n📅 Date: {datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
+        if is_truncated:
+            colored += "⚠️ <i>Response truncated</i>\n\n"
+        colored += f"<pre><code class=\"language-json\">{formatted_json}</code></pre>\n\n"
+        colored += f"👨‍💻 Developer: {config.DEV_USERNAME}\n⚡ Powered by: {config.POWERED_BY}"
+        await message.reply(colored, parse_mode="HTML")
 
     # Log lookup
     await log_lookup(user_id, api_type, input_data, json.dumps(raw_data, indent=2)[:1000])
     await update_last_active(user_id)
 
-    # Log to channel
+    # Log to channel (if configured)
     api_info = APIS.get(api_type)
-    log_channel = api_info.get('log_channel') if api_info else None
-    if log_channel:
-        try:
-            if should_send_as_file and temp_file and os.path.exists(temp_file):
-                await bot.send_document(
-                    chat_id=log_channel,
-                    document=FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
-                    caption=f"Lookup by {user_id}"
-                )
-            else:
-                await bot.send_message(
-                    chat_id=log_channel,
-                    text=f"Lookup by {user_id}\n{api_type}: {input_data}\n{formatted_json[:500]}..."
-                )
-        except Exception as e:
-            logging.error(f"Log channel error: {e}")
+    if api_info:
+        log_channel = api_info.get('log_channel')
+        if log_channel:
+            try:
+                if should_send_as_file and 'temp_file' in locals() and os.path.exists(temp_file):
+                    await bot.send_document(
+                        chat_id=log_channel,
+                        document=FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
+                        caption=f"Lookup by {user_id}"
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=log_channel,
+                        text=f"Lookup by {user_id}\n{api_type}: {input_data}\n{formatted_json[:500]}..."
+                    )
+            except Exception as e:
+                logging.error(f"Log channel error: {e}")
 
 # --- Start & Join Handlers ---
 @dp.message(CommandStart())
@@ -438,11 +439,14 @@ async def verify_join(callback: types.CallbackQuery):
 async def show_profile(callback: types.CallbackQuery):
     user_data = await get_user(callback.from_user.id)
     if not user_data:
+        await callback.answer("User not found!", show_alert=True)
         return
     admin_level = await is_user_admin(callback.from_user.id)
     is_premium = await is_user_premium(callback.from_user.id)
     credits = "♾️ Unlimited" if (admin_level or is_premium) else user_data[2]
     stats = await get_user_stats(callback.from_user.id)
+    if not stats:
+        stats = (0,0,0)
     lookups = await get_user_lookups(callback.from_user.id, limit=5)
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start=ref_{user_data[0]}"
@@ -1056,7 +1060,7 @@ async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(daily_backup, CronTrigger(hour=0, minute=0))
     scheduler.start()
-    print("🚀 Bot started with Python 3.14.3...")
+    print("🚀 Bot started successfully...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
