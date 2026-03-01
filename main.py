@@ -8,7 +8,7 @@ import csv
 import tempfile
 import shutil
 import re
-import aiosqlite  # <-- IMPORT ADDED
+import aiosqlite
 from datetime import datetime, timedelta
 from threading import Thread
 
@@ -69,11 +69,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is running with Python 3.14.3!"
 
 def run():
     port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, threaded=True)
 
 def keep_alive():
     t = Thread(target=run)
@@ -130,6 +130,7 @@ def clean_api_response(data, blacklist=None):
     if isinstance(data, dict):
         cleaned = {}
         for key, value in data.items():
+            # Check key for unwanted strings
             if any(unwanted.lower() in key.lower() for unwanted in blacklist):
                 continue
             if isinstance(value, str):
@@ -161,6 +162,7 @@ def create_readable_txt_file(raw_data, api_type, input_data):
         f.write(f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"🔎 Input: {input_data}\n")
         f.write("="*50 + "\n\n")
+        
         def write_readable(obj, indent=0):
             if isinstance(obj, dict):
                 for key, value in obj.items():
@@ -180,6 +182,7 @@ def create_readable_txt_file(raw_data, api_type, input_data):
                         f.write(f"{item}\n")
             else:
                 f.write(f"{obj}\n")
+        
         write_readable(raw_data)
         f.write("\n" + "="*50 + "\n")
         f.write(f"👨‍💻 Developer: {config.DEV_USERNAME}\n")
@@ -213,7 +216,7 @@ async def check_membership(user_id):
             if member.status in ['left', 'kicked', 'restricted']:
                 return False
         return True
-    except:
+    except Exception:
         return False
 
 def get_join_keyboard():
@@ -993,7 +996,7 @@ async def manual_backup_callback(callback: types.CallbackQuery):
         await callback.answer("Unauthorized", show_alert=True)
         return
     await callback.message.edit_text("🔄 Taking backup...")
-    await daily_backup()  # <-- AWAIT ADDED
+    await daily_backup()
     await callback.message.edit_text("✅ Backup completed and sent to backup channel.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
 
 # --- Daily Backup Function (for scheduler) ---
@@ -1053,7 +1056,7 @@ async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(daily_backup, CronTrigger(hour=0, minute=0))
     scheduler.start()
-    print("🚀 Bot started...")
+    print("🚀 Bot started with Python 3.14.3...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
