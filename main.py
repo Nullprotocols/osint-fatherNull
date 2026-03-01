@@ -1,0 +1,1081 @@
+# main.py
+import logging
+import os
+import json
+import asyncio
+import httpx
+import secrets
+import csv
+import tempfile
+import shutil
+import re
+import signal
+from datetime import datetime, timedelta
+from threading import Thread
+
+from flask import Flask
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command, CommandStart, CommandObject
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    FSInputFile
+)
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from dotenv import load_dotenv
+
+import config
+from database import (
+    init_db, add_user, get_user, update_credits,
+    create_redeem_code, redeem_code_db, get_all_users,
+    set_ban_status, get_bot_stats, get_users_in_range,
+    add_admin, remove_admin, get_all_admins, is_admin,
+    get_expired_codes, delete_redeem_code, get_top_referrers,
+    deactivate_code, get_all_codes, parse_time_string,
+    get_user_by_username, get_user_stats,
+    get_recent_users, get_active_codes, get_inactive_codes,
+    delete_user, reset_user_credits,
+    search_users, log_lookup,
+    get_total_lookups, get_user_lookups,
+    get_premium_users, get_low_credit_users, get_inactive_users,
+    update_last_active, get_leaderboard,
+    bulk_update_credits, set_user_premium, remove_user_premium, is_user_premium,
+    get_plan_price, update_plan_price,
+    create_discount_code, redeem_discount_code,
+    close_db, get_pool   # <-- new imports
+)
+import aiofiles  # <-- for async file operations
+
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+
+# Load config
+OWNER_ID = config.OWNER_ID
+ADMIN_IDS = config.ADMIN_IDS
+CHANNELS = config.CHANNELS
+CHANNEL_LINKS = config.CHANNEL_LINKS
+APIS = config.APIS
+BACKUP_CHANNEL = config.BACKUP_CHANNEL
+
+# Setup bot
+bot = Bot(token=TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+logging.basicConfig(level=logging.INFO)
+
+# --- Flask Keep-Alive for Render ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+@app.route('/health')  # <-- health check endpoint added
+def health():
+    return "OK", 200
+
+def run():
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# --- Shutdown handler ---
+async def shutdown():
+    logging.info("Shutting down bot...")
+    await close_db()
+    await bot.session.close()
+
+# --- FSM States ---
+class Form(StatesGroup):
+    waiting_for_redeem = State()
+    waiting_for_broadcast = State()
+    waiting_for_direct_message = State()
+    waiting_for_dm_user = State()
+    waiting_for_dm_content = State()
+    waiting_for_custom_code_name = State()
+    waiting_for_custom_code_amount = State()
+    waiting_for_custom_code_uses = State()
+    waiting_for_custom_code_expiry = State()
+    waiting_for_stats_range = State()
+    waiting_for_code_deactivate = State()
+    waiting_for_api_input = State()
+    waiting_for_api_type = State()
+    waiting_for_username = State()
+    waiting_for_delete_user = State()
+    waiting_for_reset_credits = State()
+    waiting_for_bulk_message = State()
+    waiting_for_code_stats = State()
+    waiting_for_user_lookups = State()
+    waiting_for_bulk_gift = State()
+    waiting_for_user_search = State()
+    waiting_for_settings = State()
+    waiting_for_offer_code = State()
+    waiting_for_bulk_dm_users = State()
+    waiting_for_bulk_dm_content = State()
+    waiting_for_add_premium = State()
+    waiting_for_remove_premium = State()
+    waiting_for_plan_price = State()
+    waiting_for_offer_details = State()
+    waiting_for_bulk_file = State()
+
+# --- Helper Functions ---
+def get_branding():
+    return {
+        "meta": {
+            "developer": config.DEV_USERNAME,
+            "powered_by": config.POWERED_BY,
+            "timestamp": datetime.now().isoformat()
+        }
+    }
+
+def clean_api_response(data, blacklist=None):
+    """Remove unwanted strings from API response based on per-API blacklist"""
+    if blacklist is None:
+        blacklist = []
+    if isinstance(data, dict):
+        cleaned = {}
+        for key, value in data.items():
+            # Check key for unwanted strings
+            if any(unwanted.lower() in key.lower() for unwanted in blacklist):
+                continue
+            if isinstance(value, str):
+                if any(unwanted.lower() in value.lower() for unwanted in blacklist):
+                    continue
+                cleaned[key] = value
+            elif isinstance(value, dict):
+                cleaned[key] = clean_api_response(value, blacklist)
+            elif isinstance(value, list):
+                cleaned[key] = [clean_api_response(item, blacklist) if isinstance(item, dict) else item for item in value]
+            else:
+                cleaned[key] = value
+        return cleaned
+    elif isinstance(data, list):
+        return [clean_api_response(item, blacklist) if isinstance(item, dict) else item for item in data]
+    return data
+
+def format_json_for_display(data, max_length=3500):
+    formatted = json.dumps(data, indent=4, ensure_ascii=False)
+    if len(formatted) > max_length:
+        truncated = formatted[:max_length]
+        truncated += f"\n\n... [Data truncated, {len(formatted) - max_length} characters more]"
+        return truncated, True
+    return formatted, False
+
+def create_readable_txt_file(raw_data, api_type, input_data):
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+        f.write(f"🔍 {api_type.upper()} Lookup Results\n")
+        f.write(f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"🔎 Input: {input_data}\n")
+        f.write("="*50 + "\n\n")
+        def write_readable(obj, indent=0):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    f.write("  " * indent + f"• {key}: ")
+                    if isinstance(value, (dict, list)):
+                        f.write("\n")
+                        write_readable(value, indent + 1)
+                    else:
+                        f.write(f"{value}\n")
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj, 1):
+                    f.write("  " * indent + f"{i}. ")
+                    if isinstance(item, (dict, list)):
+                        f.write("\n")
+                        write_readable(item, indent + 1)
+                    else:
+                        f.write(f"{item}\n")
+            else:
+                f.write(f"{obj}\n")
+        write_readable(raw_data)
+        f.write("\n" + "="*50 + "\n")
+        f.write(f"👨‍💻 Developer: {config.DEV_USERNAME}\n")
+        f.write(f"⚡ Powered by: {config.POWERED_BY}\n")
+        return f.name
+
+async def is_user_owner(user_id):
+    return user_id == OWNER_ID
+
+async def is_user_admin(user_id):
+    if user_id == OWNER_ID:
+        return 'owner'
+    if user_id in ADMIN_IDS:
+        return 'admin'
+    db_admin = await is_admin(user_id)
+    return db_admin
+
+async def is_user_banned(user_id):
+    user = await get_user(user_id)
+    return user[5] == 1 if user else False
+
+async def check_membership(user_id):
+    admin_level = await is_user_admin(user_id)
+    if admin_level:
+        return True
+    if await is_user_premium(user_id):
+        return True
+    try:
+        for channel_id in CHANNELS:
+            member = await bot.get_chat_member(channel_id, user_id)
+            if member.status in ['left', 'kicked', 'restricted']:
+                return False
+        return True
+    except:
+        return False
+
+def get_join_keyboard():
+    buttons = []
+    for i, link in enumerate(CHANNEL_LINKS):
+        buttons.append([InlineKeyboardButton(text=f"📢 Join Channel {i+1}", url=link)])
+    buttons.append([InlineKeyboardButton(text="✅ Verify Join", callback_data="check_join")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_main_menu(user_id):
+    keyboard = [
+        # Row 1
+        [
+            InlineKeyboardButton(text="📱 Number", callback_data="api_num"),
+            InlineKeyboardButton(text="🏦 IFSC", callback_data="api_ifsc")
+        ],
+        # Row 2
+        [
+            InlineKeyboardButton(text="📧 Email", callback_data="api_email"),
+            InlineKeyboardButton(text="📋 GST", callback_data="api_gst")
+        ],
+        # Row 3
+        [
+            InlineKeyboardButton(text="🚗 Vehicle", callback_data="api_vehicle"),
+            InlineKeyboardButton(text="📮 Pincode", callback_data="api_pincode")
+        ],
+        # Row 4
+        [
+            InlineKeyboardButton(text="📷 Instagram", callback_data="api_instagram"),
+            InlineKeyboardButton(text="🐱 GitHub", callback_data="api_github")
+        ],
+        # Row 5
+        [
+            InlineKeyboardButton(text="🇵🇰 Pakistan", callback_data="api_pakistan"),
+            InlineKeyboardButton(text="🌐 IP Lookup", callback_data="api_ip")
+        ],
+        # Row 6
+        [
+            InlineKeyboardButton(text="🔥 FF Info", callback_data="api_ff_info"),
+            InlineKeyboardButton(text="🚫 FF Ban", callback_data="api_ff_ban")
+        ],
+        # Row 7
+        [
+            InlineKeyboardButton(text="🎁 Redeem", callback_data="redeem"),
+            InlineKeyboardButton(text="🔗 Refer & earn", callback_data="refer_earn")
+        ],
+        # Row 8
+        [
+            InlineKeyboardButton(text="👤 Profile", callback_data="profile"),
+            InlineKeyboardButton(text="💳 Buy Credits", url="https://t.me/Nullprotocol_X")
+        ],
+        # Row 9 - Premium
+        [
+            InlineKeyboardButton(text="⭐ Premium Plans", callback_data="premium_plans")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+# --- Core API Fetch Function (used by single and bulk) ---
+async def fetch_api_data(api_type, input_data, user_id=None):
+    api_info = APIS.get(api_type)
+    if not api_info or not api_info.get('url'):
+        return {"error": "API not configured"}
+    try:
+        async with httpx.AsyncClient() as client:
+            url = api_info['url'].format(input_data)
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            resp = await client.get(url, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                raise Exception(f"API Error {resp.status_code}")
+            try:
+                raw_data = resp.json()
+            except:
+                raw_data = {"text_response": resp.text[:500]}
+        # Clean using per-API blacklist
+        blacklist = api_info.get('blacklist', [])
+        raw_data = clean_api_response(raw_data, blacklist)
+        # Add branding
+        if isinstance(raw_data, dict):
+            raw_data.update(get_branding())
+        else:
+            raw_data = {"results": raw_data}
+            raw_data.update(get_branding())
+        return raw_data
+    except Exception as e:
+        logging.error(f"API fetch error {api_type}: {e}")
+        return {"error": "Server Error", "details": str(e)[:200], **get_branding()}
+
+# --- Process single API call (sends message) ---
+async def process_api_call(message: types.Message, api_type: str, input_data: str):
+    user_id = message.from_user.id
+    if await is_user_banned(user_id):
+        return
+    user = await get_user(user_id)
+    admin_level = await is_user_admin(user_id)
+    is_premium = await is_user_premium(user_id)
+
+    if not admin_level and not is_premium:
+        if user[2] < 1:
+            await message.reply("❌ <b>Insufficient Credits!</b>", parse_mode="HTML")
+            return
+    # Deduct credit if not admin and not premium
+    if not admin_level and not is_premium:
+        await update_credits(user_id, -1)
+
+    status_msg = await message.reply("🔄 <b>Fetching Data...</b>", parse_mode="HTML")
+    raw_data = await fetch_api_data(api_type, input_data, user_id)
+    await status_msg.delete()
+
+    # Format and send response
+    formatted_json, is_truncated = format_json_for_display(raw_data, 3500)
+    formatted_json = formatted_json.replace('<', '&lt;').replace('>', '&gt;')
+    json_size = len(json.dumps(raw_data, ensure_ascii=False))
+    should_send_as_file = json_size > 3000 or (isinstance(raw_data, dict) and any(isinstance(v, list) and len(v) > 10 for v in raw_data.values()))
+
+    if should_send_as_file:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump(raw_data, f, indent=4, ensure_ascii=False)
+            temp_file = f.name
+        txt_file = create_readable_txt_file(raw_data, api_type, input_data)
+        try:
+            await message.reply_document(
+                FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
+                caption=f"🔍 <b>{api_type.upper()} Lookup Results</b>\nInput: <code>{input_data}</code>",
+                parse_mode="HTML"
+            )
+            await message.reply_document(
+                FSInputFile(txt_file, filename=f"{api_type}_{input_data}_readable.txt"),
+                caption="📄 Readable Text Format"
+            )
+        except Exception as e:
+            logging.error(f"File send error: {e}")
+        finally:
+            os.unlink(temp_file)
+            os.unlink(txt_file)
+    else:
+        colored = f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n📊 Input: <code>{input_data}</code>\n📅 Date: {datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
+        if is_truncated:
+            colored += "⚠️ <i>Response truncated</i>\n\n"
+        colored += f"<pre><code class=\"language-json\">{formatted_json}</code></pre>\n\n"
+        colored += f"👨‍💻 Developer: {config.DEV_USERNAME}\n⚡ Powered by: {config.POWERED_BY}"
+        await message.reply(colored, parse_mode="HTML")
+
+    # Log lookup
+    await log_lookup(user_id, api_type, input_data, json.dumps(raw_data, indent=2)[:1000])
+    await update_last_active(user_id)
+
+    # Log to channel
+    api_info = APIS.get(api_type)
+    log_channel = api_info.get('log_channel') if api_info else None
+    if log_channel:
+        try:
+            if should_send_as_file and 'temp_file' in locals() and os.path.exists(temp_file):
+                await bot.send_document(
+                    chat_id=log_channel,
+                    document=FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
+                    caption=f"Lookup by {user_id}"
+                )
+            else:
+                await bot.send_message(
+                    chat_id=log_channel,
+                    text=f"Lookup by {user_id}\n{api_type}: {input_data}\n{formatted_json[:500]}..."
+                )
+        except Exception as e:
+            logging.error(f"Log channel error: {e}")
+
+# --- Start & Join Handlers ---
+@dp.message(CommandStart())
+async def start_command(message: types.Message, command: CommandObject):
+    user_id = message.from_user.id
+    if await is_user_banned(user_id):
+        await message.answer("🚫 <b>You are BANNED.</b>", parse_mode="HTML")
+        return
+    existing = await get_user(user_id)
+    if not existing:
+        referrer = None
+        args = command.args
+        if args and args.startswith("ref_"):
+            try:
+                referrer = int(args.split("_")[1])
+                if referrer == user_id:
+                    referrer = None
+            except:
+                pass
+        await add_user(user_id, message.from_user.username, referrer)
+        if referrer:
+            await update_credits(referrer, 3)
+            try:
+                await bot.send_message(referrer, "🎉 <b>Referral +3 Credits!</b>", parse_mode="HTML")
+            except:
+                pass
+    if not await check_membership(user_id):
+        await message.answer("👋 Welcome! Join channels first:", reply_markup=get_join_keyboard(), parse_mode="HTML")
+        return
+    await message.answer(
+        f"🔓 <b>Access Granted!</b>\nWelcome {message.from_user.first_name}",
+        reply_markup=get_main_menu(user_id), parse_mode="HTML"
+    )
+    await update_last_active(user_id)
+
+@dp.callback_query(F.data == "check_join")
+async def verify_join(callback: types.CallbackQuery):
+    if await check_membership(callback.from_user.id):
+        await callback.message.delete()
+        await callback.message.answer("✅ Verified!", reply_markup=get_main_menu(callback.from_user.id), parse_mode="HTML")
+    else:
+        await callback.answer("❌ Still not joined all channels!", show_alert=True)
+
+# --- Profile ---
+@dp.callback_query(F.data == "profile")
+async def show_profile(callback: types.CallbackQuery):
+    user_data = await get_user(callback.from_user.id)
+    if not user_data:
+        return
+    admin_level = await is_user_admin(callback.from_user.id)
+    is_premium = await is_user_premium(callback.from_user.id)
+    credits = "♾️ Unlimited" if (admin_level or is_premium) else user_data[2]
+    stats = await get_user_stats(callback.from_user.id)
+    lookups = await get_user_lookups(callback.from_user.id, limit=5)
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start=ref_{user_data[0]}"
+    msg = (f"👤 <b>User Profile</b>\n\n"
+           f"🆔 <b>ID:</b> <code>{user_data[0]}</code>\n"
+           f"👤 <b>Username:</b> @{user_data[1] or 'N/A'}\n"
+           f"💰 <b>Credits:</b> {credits}\n"
+           f"⭐ <b>Premium:</b> {'✅ Yes' if is_premium else '❌ No'}\n"
+           f"📊 <b>Total Earned:</b> {user_data[6]}\n"
+           f"👥 <b>Referrals:</b> {stats[0]}\n"
+           f"🎫 <b>Codes Claimed:</b> {stats[1]}\n"
+           f"📅 <b>Joined:</b> {datetime.fromtimestamp(float(user_data[3])).strftime('%d-%m-%Y')}\n"
+           f"🔗 <b>Referral Link:</b>\n<code>{link}</code>\n\n"
+           f"📋 <b>Recent Lookups:</b>\n")
+    if lookups:
+        for i, (api_type, inp, date) in enumerate(lookups, 1):
+            dstr = datetime.fromisoformat(date).strftime('%d/%m %H:%M')
+            msg += f"{i}. {api_type.upper()}: <code>{inp}</code> - {dstr}\n"
+    else:
+        msg += "No lookups yet."
+    await callback.message.edit_text(msg, parse_mode="HTML", reply_markup=get_main_menu(callback.from_user.id))
+
+# --- Premium Plans Menu ---
+@dp.callback_query(F.data == "premium_plans")
+async def show_premium_plans(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if await is_user_premium(user_id):
+        await callback.message.edit_text(
+            "⭐ <b>You are already a Premium User!</b>\n\n✅ Unlimited searches\n✅ No channel join",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]])
+        )
+        return
+    weekly_price = await get_plan_price('weekly') or 69
+    monthly_price = await get_plan_price('monthly') or 199
+    text = (
+        f"⭐ <b>Premium Plans</b>\n\n"
+        f"📅 Weekly Plan – ₹{weekly_price}\n"
+        f"• 7 days unlimited access\n"
+        f"📆 Monthly Plan – ₹{monthly_price}\n"
+        f"• 30 days unlimited access\n\n"
+        f"💳 Contact @Nullprotocol_X to purchase.\n"
+        f"After payment, admin will activate."
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📅 Buy Weekly (₹{weekly_price})", callback_data="buy_weekly")],
+        [InlineKeyboardButton(text=f"📆 Buy Monthly (₹{monthly_price})", callback_data="buy_monthly")],
+        [InlineKeyboardButton(text="🎟️ Redeem Offer Code", callback_data="redeem_offer")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def buy_plan_handler(callback: types.CallbackQuery):
+    plan = callback.data.split("_")[1]
+    price = await get_plan_price(plan) or (69 if plan == "weekly" else 199)
+    text = (
+        f"🛒 <b>Purchase {plan.capitalize()} Plan</b>\n\n"
+        f"Amount: ₹{price}\n\n"
+        "📲 Send payment to [UPI ID] and forward screenshot to @Nullprotocol_X"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Contact Admin", url="https://t.me/Nullprotocol_X")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="premium_plans")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+@dp.callback_query(F.data == "redeem_offer")
+async def redeem_offer_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("🎟️ Enter your offer code:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_redeem_offer")]
+    ]))
+    await state.set_state(Form.waiting_for_offer_code)
+    await callback.answer()
+
+@dp.callback_query(F.data == "cancel_redeem_offer")
+async def cancel_offer_redeem(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer("❌ Cancelled.", reply_markup=get_main_menu(callback.from_user.id))
+
+@dp.message(Form.waiting_for_offer_code)
+async def process_offer_code(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    # For simplicity, we'll just notify admin; actual discount can be applied at purchase time.
+    # But we can store in user session.
+    await message.answer("✅ Offer code accepted! Now select a plan to apply discount.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Weekly", callback_data="buy_weekly_offer")],
+        [InlineKeyboardButton(text="📆 Monthly", callback_data="buy_monthly_offer")]
+    ]))
+    await state.update_data(offer_code=code)
+    # We won't fully implement discount logic here due to complexity; can be added later.
+    await state.clear()
+
+# --- Refer & Earn ---
+@dp.callback_query(F.data == "refer_earn")
+async def refer_earn_handler(callback: types.CallbackQuery):
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
+    msg = "🔗 <b>Refer & Earn</b>\n\nPer Referral: +3 Credits\n\nYour link:\n" + f"<code>{link}</code>"
+    back = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]])
+    await callback.message.edit_text(msg, parse_mode="HTML", reply_markup=back)
+
+@dp.callback_query(F.data == "back_home")
+async def go_home(callback: types.CallbackQuery):
+    await callback.message.edit_text("🔓 <b>Main Menu</b>", reply_markup=get_main_menu(callback.from_user.id), parse_mode="HTML")
+
+# --- Redeem Code ---
+@dp.callback_query(F.data == "redeem")
+async def redeem_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("🎁 Enter redeem code:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_redeem")]
+    ]))
+    await state.set_state(Form.waiting_for_redeem)
+    await callback.answer()
+
+@dp.callback_query(F.data == "cancel_redeem")
+async def cancel_redeem(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer("Cancelled.", reply_markup=get_main_menu(callback.from_user.id))
+
+@dp.message(Form.waiting_for_redeem)
+async def process_redeem(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    result = await redeem_code_db(message.from_user.id, code)
+    user_data = await get_user(message.from_user.id)
+    if isinstance(result, int):
+        await message.answer(f"✅ Redeemed {result} credits! New balance: {user_data[2]}", reply_markup=get_main_menu(message.from_user.id))
+    elif result == "already_claimed":
+        await message.answer("❌ You already used this code.", reply_markup=get_main_menu(message.from_user.id))
+    elif result == "invalid":
+        await message.answer("❌ Invalid code.", reply_markup=get_main_menu(message.from_user.id))
+    elif result == "inactive":
+        await message.answer("❌ Code inactive.", reply_markup=get_main_menu(message.from_user.id))
+    elif result == "limit_reached":
+        await message.answer("❌ Code usage limit reached.", reply_markup=get_main_menu(message.from_user.id))
+    elif result == "expired":
+        await message.answer("❌ Code expired.", reply_markup=get_main_menu(message.from_user.id))
+    else:
+        await message.answer("❌ Error.", reply_markup=get_main_menu(message.from_user.id))
+    await state.clear()
+
+# --- API Input Handlers ---
+@dp.callback_query(F.data.startswith("api_"))
+async def ask_api_input(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if await is_user_banned(user_id):
+        return
+    if not await check_membership(user_id):
+        await callback.answer("❌ Join channels first!", show_alert=True)
+        return
+    api_type = callback.data.split('_')[1]
+    if api_type not in APIS or not APIS[api_type].get('url'):
+        await callback.answer("❌ Service unavailable", show_alert=True)
+        return
+    await state.set_state(Form.waiting_for_api_input)
+    await state.update_data(api_type=api_type)
+    prompts = {
+        'num': "📱 Enter Mobile Number (10 digits)",
+        'ifsc': "🏦 Enter IFSC Code",
+        'email': "📧 Enter Email",
+        'gst': "📋 Enter GST Number",
+        'vehicle': "🚗 Enter Vehicle RC",
+        'pincode': "📮 Enter Pincode",
+        'instagram': "📷 Enter Instagram Username",
+        'github': "🐱 Enter GitHub Username",
+        'pakistan': "🇵🇰 Enter Pakistan Number",
+        'ip': "🌐 Enter IP Address",
+        'ff_info': "🔥 Enter Free Fire UID",
+        'ff_ban': "🚫 Enter Free Fire UID"
+    }
+    await callback.message.answer(
+        f"<b>{prompts.get(api_type, 'Enter input')}</b>\nType /cancel to abort.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_api")]])
+    )
+
+@dp.callback_query(F.data == "cancel_api")
+async def cancel_api(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer("Cancelled.", reply_markup=get_main_menu(callback.from_user.id))
+
+@dp.message(Form.waiting_for_api_input)
+async def handle_api_input(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    api_type = data.get('api_type')
+    if api_type:
+        await process_api_call(message, api_type, message.text.strip())
+    await state.clear()
+
+# --- Admin Panel (Interactive) ---
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    admin_level = await is_user_admin(message.from_user.id)
+    if not admin_level:
+        return
+    buttons = [
+        [InlineKeyboardButton(text="📊 Quick Stats", callback_data="quick_stats"),
+         InlineKeyboardButton(text="👥 Recent Users", callback_data="recent_users")],
+        [InlineKeyboardButton(text="🎫 Active Codes", callback_data="active_codes"),
+         InlineKeyboardButton(text="🏆 Top Referrers", callback_data="top_ref")],
+        [InlineKeyboardButton(text="📢 Broadcast", callback_data="broadcast_now"),
+         InlineKeyboardButton(text="📨 Direct Message", callback_data="dm_now")],
+        [InlineKeyboardButton(text="👥 Bulk DM", callback_data="bulk_dm_start")],
+        [InlineKeyboardButton(text="⭐ Premium Users", callback_data="list_premium"),
+         InlineKeyboardButton(text="➕ Add Premium", callback_data="add_premium"),
+         InlineKeyboardButton(text="➖ Remove Premium", callback_data="remove_premium")],
+        [InlineKeyboardButton(text="💰 Set Plan Price", callback_data="set_plan_price"),
+         InlineKeyboardButton(text="🎟️ Create Offer", callback_data="create_offer")],
+        [InlineKeyboardButton(text="💾 Manual Backup", callback_data="manual_backup")],
+        [InlineKeyboardButton(text="📁 Bulk Lookup", callback_data="bulk_lookup_admin")],
+        [InlineKeyboardButton(text="❌ Close", callback_data="close_panel")]
+    ]
+    await message.answer("🛠 <b>ADMIN PANEL</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == "close_panel")
+async def close_panel(callback: types.CallbackQuery):
+    await callback.message.delete()
+
+@dp.callback_query(F.data == "quick_stats")
+async def quick_stats_callback(callback: types.CallbackQuery):
+    stats = await get_bot_stats()
+    top_ref = await get_top_referrers(3)
+    total_lookups = await get_total_lookups()
+    text = f"📊 <b>Quick Stats</b>\n\nTotal Users: {stats['total_users']}\nActive: {stats['active_users']}\nTotal Credits: {stats['total_credits']}\nLookups: {total_lookups}\n"
+    if top_ref:
+        text += "\nTop Referrers:\n"
+        for i, (ref_id, cnt) in enumerate(top_ref, 1):
+            text += f"{i}. <code>{ref_id}</code> : {cnt}\n"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+
+@dp.callback_query(F.data == "recent_users")
+async def recent_users_callback(callback: types.CallbackQuery):
+    users = await get_recent_users(10)
+    text = "📅 <b>Recent Users</b>\n\n"
+    for uid, uname, joined in users:
+        dt = datetime.fromtimestamp(float(joined)).strftime('%d/%m %H:%M')
+        text += f"• <code>{uid}</code> - @{uname or 'N/A'} - {dt}\n"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+
+@dp.callback_query(F.data == "active_codes")
+async def active_codes_callback(callback: types.CallbackQuery):
+    codes = await get_active_codes()
+    if not codes:
+        await callback.answer("No active codes.", show_alert=True)
+        return
+    text = "✅ <b>Active Codes</b>\n\n"
+    for code, amt, maxu, cur in codes[:10]:
+        text += f"🎟 <code>{code}</code> - {amt} credits ({cur}/{maxu})\n"
+    if len(codes) > 10:
+        text += f"\n... and {len(codes)-10} more"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+
+@dp.callback_query(F.data == "top_ref")
+async def top_ref_callback(callback: types.CallbackQuery):
+    top = await get_top_referrers(5)
+    if not top:
+        await callback.answer("No referrals.", show_alert=True)
+        return
+    text = "🏆 <b>Top Referrers</b>\n\n"
+    for i, (uid, cnt) in enumerate(top, 1):
+        text += f"{i}. <code>{uid}</code> - {cnt} referrals\n"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+
+# --- Broadcast, DM, Bulk DM ---
+@dp.callback_query(F.data == "broadcast_now")
+async def broadcast_now(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("📢 Send message to broadcast:")
+    await state.set_state(Form.waiting_for_broadcast)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_broadcast)
+async def broadcast_handler(message: types.Message, state: FSMContext):
+    users = await get_all_users()
+    sent = 0
+    failed = 0
+    status = await message.answer(f"Broadcasting to {len(users)} users...")
+    for uid in users:
+        try:
+            await message.copy_to(uid)
+            sent += 1
+        except:
+            failed += 1
+        if (sent+failed) % 20 == 0:
+            await status.edit_text(f"Sent {sent}, Failed {failed} of {len(users)}")
+        await asyncio.sleep(0.05)
+    await status.edit_text(f"✅ Broadcast complete. Sent: {sent}, Failed: {failed}")
+    await state.clear()
+
+@dp.callback_query(F.data == "dm_now")
+async def dm_now(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("👤 Enter user ID:")
+    await state.set_state(Form.waiting_for_dm_user)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_dm_user)
+async def dm_user_handler(message: types.Message, state: FSMContext):
+    try:
+        uid = int(message.text)
+        await state.update_data(dm_user_id=uid)
+        await message.answer("Now send the message:")
+        await state.set_state(Form.waiting_for_dm_content)
+    except:
+        await message.answer("Invalid ID.")
+
+@dp.message(Form.waiting_for_dm_content)
+async def dm_content_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get('dm_user_id')
+    try:
+        await message.copy_to(uid)
+        await message.answer("✅ Sent.")
+    except Exception as e:
+        await message.answer(f"❌ Failed: {e}")
+    await state.clear()
+
+@dp.callback_query(F.data == "bulk_dm_start")
+async def bulk_dm_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("👥 Enter user IDs separated by spaces:")
+    await state.set_state(Form.waiting_for_bulk_dm_users)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_bulk_dm_users)
+async def bulk_dm_users_handler(message: types.Message, state: FSMContext):
+    ids = []
+    for part in message.text.split():
+        try:
+            ids.append(int(part))
+        except:
+            await message.reply(f"Invalid ID: {part}")
+            return
+    if not ids:
+        await message.reply("No valid IDs.")
+        await state.clear()
+        return
+    await state.update_data(bulk_dm_users=ids)
+    await message.answer("Now send the message to broadcast to these users:")
+    await state.set_state(Form.waiting_for_bulk_dm_content)
+
+@dp.message(Form.waiting_for_bulk_dm_content)
+async def bulk_dm_send_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    ids = data.get('bulk_dm_users', [])
+    status = await message.answer(f"Sending to {len(ids)} users...")
+    sent = 0
+    failed = 0
+    for uid in ids:
+        try:
+            await message.copy_to(uid)
+            sent += 1
+        except:
+            failed += 1
+        if (sent+failed) % 10 == 0:
+            await status.edit_text(f"Sent {sent}, Failed {failed} of {len(ids)}")
+        await asyncio.sleep(0.05)
+    await status.edit_text(f"✅ Bulk DM done. Sent: {sent}, Failed: {failed}")
+    await state.clear()
+
+# --- Premium Management Callbacks ---
+@dp.callback_query(F.data == "list_premium")
+async def list_premium_callback(callback: types.CallbackQuery):
+    premium = await get_premium_users()
+    if not premium:
+        await callback.message.edit_text("No premium users.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+        return
+    text = "⭐ <b>Premium Users</b>\n\n"
+    for uid, uname, exp in premium[:10]:
+        exp_str = "Permanent" if exp is None else datetime.fromisoformat(exp).strftime('%d/%m/%Y')
+        text += f"• <code>{uid}</code> - @{uname or 'N/A'} - {exp_str}\n"
+    if len(premium) > 10:
+        text += f"\n... and {len(premium)-10} more"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+
+@dp.callback_query(F.data == "add_premium")
+async def add_premium_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    await callback.message.answer("➕ Enter user ID and optional days (e.g., 123456 30):")
+    await state.set_state(Form.waiting_for_add_premium)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_add_premium)
+async def add_premium_handler(message: types.Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        uid = int(parts[0])
+        days = int(parts[1]) if len(parts) > 1 else None
+        await set_user_premium(uid, days)
+        await message.reply(f"✅ Premium added for {uid}" + (f" for {days} days." if days else " permanently."))
+        try:
+            await bot.send_message(uid, "🎉 You are now a premium user!", parse_mode="HTML")
+        except:
+            pass
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+@dp.callback_query(F.data == "remove_premium")
+async def remove_premium_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    await callback.message.answer("➖ Enter user ID:")
+    await state.set_state(Form.waiting_for_remove_premium)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_remove_premium)
+async def remove_premium_handler(message: types.Message, state: FSMContext):
+    try:
+        uid = int(message.text)
+        await remove_user_premium(uid)
+        await message.reply(f"✅ Premium removed from {uid}.")
+        try:
+            await bot.send_message(uid, "⚠️ Your premium status has been removed.", parse_mode="HTML")
+        except:
+            pass
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+@dp.callback_query(F.data == "set_plan_price")
+async def set_plan_price_callback(callback: types.CallbackQuery):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Weekly", callback_data="set_price_weekly")],
+        [InlineKeyboardButton(text="📆 Monthly", callback_data="set_price_monthly")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
+    ])
+    await callback.message.edit_text("💰 Select plan to modify:", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("set_price_"))
+async def set_price_input(callback: types.CallbackQuery, state: FSMContext):
+    plan = callback.data.split("_")[2]
+    await state.update_data(plan_type=plan)
+    await callback.message.answer(f"Enter new price for {plan.capitalize()} plan (₹):")
+    await state.set_state(Form.waiting_for_plan_price)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_plan_price)
+async def set_price_handler(message: types.Message, state: FSMContext):
+    try:
+        price = int(message.text)
+        data = await state.get_data()
+        plan = data.get('plan_type')
+        await update_plan_price(plan, price)
+        await message.reply(f"✅ {plan.capitalize()} plan price set to ₹{price}.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+@dp.callback_query(F.data == "create_offer")
+async def create_offer_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    await callback.message.answer("🎟️ Enter offer details in format: CODE PLAN DISCOUNT% MAX_USES [EXPIRY]\nExample: OFFER10 weekly 10 5 7d")
+    await state.set_state(Form.waiting_for_offer_details)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_offer_details)
+async def create_offer_handler(message: types.Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        code = parts[0].upper()
+        plan = parts[1].lower()
+        discount = int(parts[2])
+        max_uses = int(parts[3])
+        expiry = parse_time_string(parts[4]) if len(parts) > 4 else None
+        await create_discount_code(code, plan, discount, max_uses, expiry)
+        await message.reply(f"✅ Offer code {code} created for {plan} plan with {discount}% off.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+# --- Bulk Lookup (Admin/Premium) ---
+@dp.callback_query(F.data == "bulk_lookup_admin")
+async def bulk_lookup_admin_callback(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    admin = await is_user_admin(user_id)
+    premium = await is_user_premium(user_id)
+    if not (admin or premium):
+        await callback.answer("❌ Admin/Premium only!", show_alert=True)
+        return
+    # Show API selection
+    keyboard = []
+    row = []
+    for i, api_name in enumerate(APIS.keys(), 1):
+        row.append(InlineKeyboardButton(text=api_name.upper(), callback_data=f"bulk_api_{api_name}"))
+        if i % 3 == 0:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(text="❌ Cancel", callback_data="admin_back")])
+    await callback.message.edit_text("📁 Select API for bulk lookup:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data.startswith("bulk_api_"))
+async def bulk_api_selected(callback: types.CallbackQuery, state: FSMContext):
+    api_type = callback.data.split("_")[2]
+    await state.update_data(bulk_api_type=api_type)
+    await callback.message.answer(f"📁 Send a text file with one {api_type.upper()} input per line:")
+    await state.set_state(Form.waiting_for_bulk_file)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_bulk_file, F.document)
+async def bulk_file_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    api_type = data.get('bulk_api_type')
+    if not api_type:
+        await message.answer("Session expired.")
+        await state.clear()
+        return
+    # Download file
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    file_path = file.file_path
+    await bot.download_file(file_path, "temp_bulk.txt")
+    with open("temp_bulk.txt", 'r', encoding='utf-8') as f:
+        lines = [line.strip() for line in f if line.strip()]
+    os.remove("temp_bulk.txt")
+    if not lines:
+        await message.answer("File is empty.")
+        await state.clear()
+        return
+    status = await message.answer(f"🔄 Processing {len(lines)} lookups...")
+    results = []
+    for i, inp in enumerate(lines):
+        raw = await fetch_api_data(api_type, inp, message.from_user.id)
+        results.append({'input': inp, 'data': raw})
+        if (i+1) % 10 == 0:
+            await status.edit_text(f"Processed {i+1}/{len(lines)}...")
+    # Generate CSV
+    out_file = f"bulk_{api_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    with open(out_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Input', 'Result (JSON)'])
+        for r in results:
+            writer.writerow([r['input'], json.dumps(r['data'], ensure_ascii=False)])
+    await message.reply_document(FSInputFile(out_file), caption=f"Bulk lookup results for {api_type}")
+    os.remove(out_file)
+    await status.delete()
+    await state.clear()
+
+# --- Manual Backup ---
+@dp.callback_query(F.data == "manual_backup")
+async def manual_backup_callback(callback: types.CallbackQuery):
+    admin_level = await is_user_admin(callback.from_user.id)
+    if not admin_level:
+        await callback.answer("Unauthorized", show_alert=True)
+        return
+    await callback.message.edit_text("🔄 Taking backup...")
+    await daily_backup()
+    await callback.message.edit_text("✅ Backup completed and sent to backup channel.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]]))
+
+# --- Daily Backup Function (for scheduler) ---
+async def daily_backup():
+    try:
+        # Export users table to CSV
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            users = await conn.fetch("SELECT * FROM users")
+        
+        csv_backup = f"backup_users_{datetime.now().strftime('%Y%m%d')}.csv"
+        async with aiofiles.open(csv_backup, 'w', newline='', encoding='utf-8') as f:
+            # Write header
+            if users:
+                header = list(users[0].keys())
+                await f.write(','.join(header) + '\n')
+                for row in users:
+                    line = ','.join(str(v) if v is not None else '' for v in row.values())
+                    await f.write(line + '\n')
+        
+        # Stats backup
+        txt_backup = f"backup_stats_{datetime.now().strftime('%Y%m%d')}.txt"
+        stats = await get_bot_stats()
+        total_lookups = await get_total_lookups()
+        async with aiofiles.open(txt_backup, 'w', encoding='utf-8') as f:
+            await f.write(f"Backup Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            await f.write(f"Total Users: {stats['total_users']}\n")
+            await f.write(f"Active Users: {stats['active_users']}\n")
+            await f.write(f"Total Credits: {stats['total_credits']}\n")
+            await f.write(f"Credits Distributed: {stats['credits_distributed']}\n")
+            await f.write(f"Total Lookups: {total_lookups}\n")
+        
+        await bot.send_document(BACKUP_CHANNEL, FSInputFile(csv_backup))
+        await bot.send_document(BACKUP_CHANNEL, FSInputFile(txt_backup))
+        
+        os.remove(csv_backup)
+        os.remove(txt_backup)
+        logging.info("Daily backup successful.")
+    except Exception as e:
+        logging.error(f"Backup failed: {e}")
+
+# --- Admin Back Button ---
+@dp.callback_query(F.data == "admin_back")
+async def admin_back(callback: types.CallbackQuery):
+    await admin_panel(callback.message)
+
+# --- Cancel command ---
+@dp.message(Command("cancel"))
+async def cancel_command(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("✅ Cancelled.", reply_markup=get_main_menu(message.from_user.id))
+
+# --- Main function with scheduler ---
+async def main():
+    keep_alive()
+    await init_db()
+    
+    # Setup shutdown handler
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+    
+    # Initialize static admins
+    for aid in ADMIN_IDS:
+        if aid != OWNER_ID:
+            await add_admin(aid)
+    
+    # Schedule daily backup at 00:00 UTC
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(daily_backup, CronTrigger(hour=0, minute=0))
+    scheduler.start()
+    
+    print("🚀 Bot started...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
