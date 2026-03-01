@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timedelta
 from threading import Thread
 
-import aiosqlite  # <-- IMPORT MISSING THA - YEH ADD KIYA
+import aiosqlite  # ✅ IMPORT MISSING THA - YEH ADD KIYA
 
 from flask import Flask
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1057,7 +1057,7 @@ async def main():
     print("🚀 Bot started...")
     await dp.start_polling(bot)
 
-# ✅ YAHAN SE CHANGE SHURU HOTA HAI – RESTART LOOP WITH ERROR HANDLING
+# ✅ AUTO-RESTART LOOP – AGAR BOT CRASH HUA TO 5 SECOND MEIN RESTART
 if __name__ == "__main__":
     while True:
         try:
