@@ -293,15 +293,22 @@ def get_main_menu(user_id):
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+# --- FIXED: fetch_api_data with debug print and better error handling ---
 async def fetch_api_data(api_type, input_data):
     api_info = APIS.get(api_type)
     if not api_info or not api_info.get('url'):
+        logging.error(f"API not configured: {api_type}")
         return {"error": "API not configured", **get_branding()}
+    
     url_template = api_info['url']
     if '{}' in url_template:
         url = url_template.format(input_data)
     else:
         url = url_template + input_data
+    
+    # 🔍 DEBUG – Render logs mein dekhein
+    print(f"🔍 DEBUG: api_type={api_type}, url={url}")
+    
     try:
         async with httpx.AsyncClient() as client:
             headers = {'User-Agent': 'Mozilla/5.0'}
@@ -344,6 +351,7 @@ async def fetch_api_data(api_type, input_data):
         logging.error(f"API fetch error {api_type}: {e}")
         return {"error": "Server Error", "details": str(e)[:200], **get_branding()}
 
+# --- FIXED: process_api_call with improved log channel file handling ---
 async def process_api_call(message: types.Message, api_type: str, input_data: str):
     user_id = message.from_user.id
     if await is_user_banned(user_id):
@@ -373,7 +381,9 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
 
     temp_file = None
     txt_file = None
+    files_sent_successfully = False
 
+    # User ko file bhejna (agar zaroorat ho)
     if should_send_as_file:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
             json.dump(raw_data, f, indent=4, ensure_ascii=False)
@@ -398,8 +408,9 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
                 caption="📄 <b>Readable Text Format</b>\n\n<i>Alternative format for easy reading on mobile</i>",
                 parse_mode="HTML"
             )
+            files_sent_successfully = True
         except Exception as e:
-            logging.error(f"File send error: {e}")
+            logging.error(f"File send error to user: {e}")
             short_msg = (
                 f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n"
                 f"📊 <b>Input:</b> <code>{input_data}</code>\n"
@@ -410,12 +421,9 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
                 f"⚡ <b>Powered by:</b> {POWERED_BY}"
             )
             await message.reply(short_msg, parse_mode="HTML")
-        finally:
-            if temp_file and os.path.exists(temp_file):
-                os.unlink(temp_file)
-            if txt_file and os.path.exists(txt_file):
-                os.unlink(txt_file)
+            files_sent_successfully = False
     else:
+        # JSON text message
         colored = (
             f"🔍 <b>{api_type.upper()} Lookup Results</b>\n\n"
             f"📊 <b>Input:</b> <code>{input_data}</code>\n"
@@ -431,6 +439,7 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
         )
         await message.reply(colored, parse_mode="HTML")
 
+    # Log lookup in database
     log_data = raw_data.copy()
     if isinstance(log_data, dict) and json_size > 10000:
         for key in log_data:
@@ -441,12 +450,16 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
     await log_lookup(user_id, api_type, input_data, json.dumps(log_data, indent=2))
     await update_last_active(user_id)
 
+    # Log to channel
     log_channel = LOG_CHANNELS.get(api_type)
     if log_channel and log_channel != "-1000000000000":
         try:
             username = message.from_user.username or 'N/A'
             user_info = f"👤 User: {user_id} (@{username})"
+            
+            # FIX: Files tab bhejo jab user ko file mili ho
             if should_send_as_file and temp_file and os.path.exists(temp_file):
+                # Send JSON file to log channel
                 await bot.send_document(
                     chat_id=int(log_channel),
                     document=FSInputFile(temp_file, filename=f"{api_type}_{input_data}.json"),
@@ -468,6 +481,7 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
                         caption="📄 Readable Text Format"
                     )
             else:
+                # Send text message to log channel
                 log_message = (
                     f"📊 <b>Lookup Log - {api_type.upper()}</b>\n\n"
                     f"{user_info}\n"
@@ -495,6 +509,18 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
                 )
             except:
                 pass
+
+    # Clean up temporary files
+    if temp_file and os.path.exists(temp_file):
+        try:
+            os.unlink(temp_file)
+        except:
+            pass
+    if txt_file and os.path.exists(txt_file):
+        try:
+            os.unlink(txt_file)
+        except:
+            pass
 
 # --- START COMMAND ---
 @dp.message(CommandStart())
@@ -728,10 +754,14 @@ async def ask_api_input(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_api")]])
     )
 
+# --- FIXED: cancel_api with try-except ---
 @dp.callback_query(F.data == "cancel_api")
 async def cancel_api(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logging.error(f"Error deleting message in cancel_api: {e}")
     await callback.message.answer("❌ Operation Cancelled.", reply_markup=get_main_menu(callback.from_user.id))
 
 @dp.message(Form.waiting_for_api_input)
