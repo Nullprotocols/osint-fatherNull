@@ -711,7 +711,6 @@ async def ask_api_input(callback: types.CallbackQuery, state: FSMContext):
         'github': "🐱 Enter GitHub Username",
         'pakistan': "🇵🇰 Enter Pakistan Mobile Number (with country code)",
         'ip': "🌐 Enter IP Address",
-        # New APIs
         'aadhar': "📱 Enter Aadhaar Number (12 digits)",
         'ration': "📱 Enter Aadhaar Number for Ration Info (12 digits)",
         'tg2num': "🆔 Enter Telegram User ID",
