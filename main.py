@@ -369,7 +369,7 @@ async def process_api_call(message: types.Message, api_type: str, input_data: st
                 f"⚠️ <b>Data too large for message</b>\n"
                 f"📄 <i>Attempted to send as file but failed</i>\n\n"
                 f"👨‍💻 <b>Developer:</b> {DEV_USERNAME}\n"
-                f"⚡ <b>Powered by:</b} {POWERED_BY}"
+                f"⚡ <b>Powered by:</b> {POWERED_BY}"
             )
             await message.reply(short_msg, parse_mode="HTML")
         finally:
