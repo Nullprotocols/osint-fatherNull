@@ -1,9 +1,9 @@
 # config.py
-# Owner and Admins
+# Owner and Admins (Hardcoded – Render mein sirf BOT_TOKEN environment variable daalna hai)
 OWNER_ID = 8104850843
 ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins
 
-# Force Join Channels
+# Force Join Channels (IDs and Links)
 CHANNELS = [-1003090922367, -1003698567122, -1003672015073]
 CHANNEL_LINKS = [
     "https://t.me/all_data_here",
@@ -11,7 +11,7 @@ CHANNEL_LINKS = [
     "https://t.me/legend_chats_osint"
 ]
 
-# Log Channels (apni IDs yahan daalein)
+# Log Channels – YAHAN APNI CHANNEL IDS DAALEIN (Bot ko admin banayein)
 LOG_CHANNELS = {
     'num': -1003482423742,
     'ifsc': -1003624886596,
@@ -23,7 +23,7 @@ LOG_CHANNELS = {
     'github': -1003576017442,
     'pakistan': -1003663672738,
     'ip': -1003665811220,
-    # New APIs (sab ek hi channel mein log ho rahe hain)
+    # New APIs – alag-alag log channels (ya ek hi rakh sakte ho)
     'aadhar': -1003482423742,
     'ration': -1003643170105,
     'tg2num': -1003642820243,
@@ -129,7 +129,7 @@ APIS = {
         'desc': 'Telegram to number lookup',
         'extra_blacklist': ['credit', 'channel', 'validity']
     },
-    # Fixed Vehicle APIs
+    # Fixed Vehicle APIs – teeno alag-alag
     'vehicle_to_number': {
         'url': 'https://vehicle-apiovttr.vercel.app/api.php?rc={}',
         'param': 'vehicle number',
@@ -144,6 +144,7 @@ APIS = {
         'desc': 'Vehicle challan lookup',
         'extra_blacklist': []
     },
+    # FF APIs – ab kaam karengi
     'ff_info': {
         'url': 'https://abbas-apis.vercel.app/api/ff-info?uid={}',
         'param': 'Free Fire UID',
@@ -160,9 +161,9 @@ APIS = {
     },
 }
 
-# Developer branding
+# Developer branding (flattened)
 DEV_USERNAME = "@Nullprotocol_X"
 POWERED_BY = "NULL PROTOCOL"
 
-# Backup channel
+# Backup channel (daily backup yahan bhejna hai)
 BACKUP_CHANNEL = -1003740236326
