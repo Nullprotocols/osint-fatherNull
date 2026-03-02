@@ -1,7 +1,9 @@
 # config.py
+# Owner and Admins
 OWNER_ID = 8104850843
 ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins
 
+# Force Join Channels
 CHANNELS = [-1003090922367, -1003698567122, -1003672015073]
 CHANNEL_LINKS = [
     "https://t.me/all_data_here",
@@ -9,6 +11,7 @@ CHANNEL_LINKS = [
     "https://t.me/legend_chats_osint"
 ]
 
+# Log Channels (apni IDs yahan daalein)
 LOG_CHANNELS = {
     'num': -1003482423742,
     'ifsc': -1003624886596,
@@ -20,16 +23,17 @@ LOG_CHANNELS = {
     'github': -1003576017442,
     'pakistan': -1003663672738,
     'ip': -1003665811220,
-    # New APIs (set log channel to 0 if not available)
-    'aadhar': -1003665811220,
-    'ration': -1003665811220,
-    'tg2num': -1003665811220,
-    'vehicle_to_number': -1003665811220,
-    'vehicle_chalan': -1003665811220,
-    'ff_info': -1003665811220,
-    'ff_ban': -1003665811220,
+    # New APIs (sab ek hi channel mein log ho rahe hain)
+    'aadhar': -1003482423742,
+    'ration': -1003643170105,
+    'tg2num': -1003642820243,
+    'vehicle_to_number': -1003237155636,
+    'vehicle_chalan': -1003237155636,
+    'ff_info': -1003588577282,
+    'ff_ban': -1003521974255,
 }
 
+# APIs with per-API branding removal
 APIS = {
     'num': {
         'url': 'https://num-free-rootx-jai-shree-ram-14-day.vercel.app/?key=lundkinger&number={}',
@@ -109,7 +113,7 @@ APIS = {
         'param': 'aadhaar number',
         'log': LOG_CHANNELS['aadhar'],
         'desc': 'Aadhaar info lookup',
-        'extra_blacklist': ['meta']  # removes whole "meta" block
+        'extra_blacklist': ['meta']
     },
     'ration': {
         'url': 'https://aadhar-to-family-demo.vercel.app/?key=DEMOOOOOO&id={}',
@@ -125,11 +129,12 @@ APIS = {
         'desc': 'Telegram to number lookup',
         'extra_blacklist': ['credit', 'channel', 'validity']
     },
+    # Fixed Vehicle APIs
     'vehicle_to_number': {
         'url': 'https://vehicle-apiovttr.vercel.app/api.php?rc={}',
         'param': 'vehicle number',
         'log': LOG_CHANNELS['vehicle_to_number'],
-        'desc': 'Vehicle to number lookup',
+        'desc': 'Vehicle to number lookup (owner details)',
         'extra_blacklist': []
     },
     'vehicle_chalan': {
@@ -155,9 +160,9 @@ APIS = {
     },
 }
 
-# Developer branding (flattened)
+# Developer branding
 DEV_USERNAME = "@Nullprotocol_X"
 POWERED_BY = "NULL PROTOCOL"
 
-# Backup channel (hardcoded)
+# Backup channel
 BACKUP_CHANNEL = -1003740236326
