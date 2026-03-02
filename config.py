@@ -21,13 +21,13 @@ LOG_CHANNELS = {
     'pakistan': -1003663672738,
     'ip': -1003665811220,
     # New APIs (set log channel to 0 if not available)
-    'aadhar': 0,
-    'ration': 0,
-    'tg2num': 0,
-    'vehicle_to_number': 0,
-    'vehicle_chalan': 0,
-    'ff_info': 0,
-    'ff_ban': 0,
+    'aadhar': -1003665811220,
+    'ration': -1003665811220,
+    'tg2num': -1003665811220,
+    'vehicle_to_number': -1003665811220,
+    'vehicle_chalan': -1003665811220,
+    'ff_info': -1003665811220,
+    'ff_ban': -1003665811220,
 }
 
 APIS = {
