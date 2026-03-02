@@ -7,7 +7,10 @@ from datetime import datetime, timedelta
 DB_NAME = "nullprotocol.db"
 
 def parse_time_string(time_str):
-    """Parse time string like '30m', '2h', '1h30m' into minutes."""
+    """
+    Parse time string like '30m', '2h', '1h30m' into minutes.
+    Returns None if invalid or 'none'.
+    """
     if not time_str or str(time_str).lower() == 'none':
         return None
     time_str = str(time_str).lower()
@@ -71,17 +74,7 @@ async def init_db():
                 UNIQUE(user_id, code)
             )
         """)
-        # Stats table
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS stats (
-                date TEXT PRIMARY KEY,
-                total_users INTEGER DEFAULT 0,
-                active_users INTEGER DEFAULT 0,
-                total_lookups INTEGER DEFAULT 0,
-                credits_used INTEGER DEFAULT 0
-            )
-        """)
-        # Lookup logs table
+        # Lookup logs
         await db.execute("""
             CREATE TABLE IF NOT EXISTS lookup_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,7 +85,7 @@ async def init_db():
                 lookup_date TEXT
             )
         """)
-        # Premium plans table (for admin price configuration)
+        # Premium plans (for pricing)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS premium_plans (
                 plan_id TEXT PRIMARY KEY,
@@ -101,7 +94,6 @@ async def init_db():
                 description TEXT
             )
         """)
-        # Insert default plans if not exist
         await db.execute("INSERT OR IGNORE INTO premium_plans (plan_id, price, duration_days, description) VALUES ('weekly', 69, 7, 'Weekly Plan')")
         await db.execute("INSERT OR IGNORE INTO premium_plans (plan_id, price, duration_days, description) VALUES ('monthly', 199, 30, 'Monthly Plan')")
         # Discount codes for plans
@@ -217,6 +209,12 @@ async def get_premium_users():
         async with db.execute("SELECT user_id, username, premium_expiry FROM users WHERE is_premium = 1") as cursor:
             return await cursor.fetchall()
 
+async def get_users_with_min_credits(min_credits=100):
+    """Return users with credits >= min_credits (for /premiumusers command)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id, username, credits FROM users WHERE credits >= ? ORDER BY credits DESC", (min_credits,)) as cursor:
+            return await cursor.fetchall()
+
 # ---------- Premium plans functions ----------
 async def get_plan_price(plan_id):
     """Get price for a plan (weekly/monthly)."""
@@ -258,7 +256,6 @@ async def redeem_discount_code(user_id, code, plan_id):
             created_dt = datetime.fromisoformat(created_date)
             if datetime.now() > created_dt + timedelta(minutes=expiry_minutes):
                 return "expired"
-        # Apply discount (return percent)
         await db.execute("UPDATE discount_codes SET current_uses = current_uses + 1 WHERE code = ?", (code,))
         await db.commit()
         return discount_percent
@@ -300,7 +297,7 @@ async def redeem_code_db(user_id, code):
             await db.execute("INSERT INTO redeem_logs (user_id, code, claimed_date) VALUES (?, ?, ?)", (user_id, code, datetime.now().isoformat()))
             await db.commit()
             return amount
-        except:
+        except Exception:
             await db.rollback()
             return "error"
 
