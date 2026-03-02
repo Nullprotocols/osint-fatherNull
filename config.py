@@ -1,7 +1,7 @@
 # config.py
 # Owner and Admins (Hardcoded)
 OWNER_ID = 8104850843
-ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins
+ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins (owner ID already included as owner)
 
 # Force Join Channels (IDs and Links)
 CHANNELS = [-1003090922367, -1003698567122, -1003672015073]
@@ -11,7 +11,7 @@ CHANNEL_LINKS = [
     "https://t.me/legend_chats_osint"
 ]
 
-# Log Channels (Hardcoded)
+# Log Channels (Hardcoded IDs)
 LOG_CHANNELS = {
     'num': -1003482423742,
     'ifsc': -1003624886596,
@@ -33,9 +33,7 @@ APIS = {
         'log': LOG_CHANNELS['num'],
         'desc': 'Mobile number lookup',
         'extra_blacklist': [
-            'Dm to buy access', 'Owner', '@Kon_Hu_Mai',
-            '@Simpleguy444', 'Simpleguy444',
-            'Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444'
+            'Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444.'
         ]
     },
     'ifsc': {
