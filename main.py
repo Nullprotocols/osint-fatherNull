@@ -832,6 +832,8 @@ async def admin_user_mgmt(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="💰 Premium Users (100+)", callback_data="admin_premiumusers"),
          InlineKeyboardButton(text="📉 Low Credit Users", callback_data="admin_lowcredit")],
         [InlineKeyboardButton(text="⏰ Inactive Users", callback_data="admin_inactiveusers")],
+        [InlineKeyboardButton(text="⭐ Add Premium", callback_data="add_premium"),
+         InlineKeyboardButton(text="➖ Remove Premium", callback_data="remove_premium")],
         [InlineKeyboardButton(text="🔙 Back to Admin", callback_data="admin_back")]
     ]
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -853,6 +855,8 @@ async def admin_code_mgmt(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📊 Code Stats", callback_data="admin_codestats"),
          InlineKeyboardButton(text="⌛️ Check Expired", callback_data="admin_checkexpired")],
         [InlineKeyboardButton(text="🧹 Clean Expired", callback_data="admin_cleanexpired")],
+        [InlineKeyboardButton(text="💰 Set Plan Price", callback_data="set_plan_price"),
+         InlineKeyboardButton(text="🎟️ Create Offer", callback_data="create_offer")],
         [InlineKeyboardButton(text="🔙 Back to Admin", callback_data="admin_back")]
     ]
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -1290,6 +1294,117 @@ async def inactive_users_days_handler(message: types.Message, state: FSMContext)
         await message.answer(text, parse_mode="HTML")
     except:
         await message.answer("❌ Invalid input.")
+    await state.clear()
+
+# --- ADD PREMIUM (via button) ---
+@dp.callback_query(F.data == "add_premium")
+async def add_premium_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    await callback.message.answer("➕ Enter user ID and optional days (e.g., 123456 30):")
+    await state.set_state(Form.waiting_for_add_premium)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_add_premium)
+async def add_premium_handler(message: types.Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        uid = int(parts[0])
+        days = int(parts[1]) if len(parts) > 1 else None
+        await set_user_premium(uid, days)
+        await message.reply(f"✅ Premium added for {uid}" + (f" for {days} days." if days else " permanently."))
+        try:
+            await bot.send_message(uid, "🎉 You are now a premium user!", parse_mode="HTML")
+        except:
+            pass
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+# --- REMOVE PREMIUM (via button) ---
+@dp.callback_query(F.data == "remove_premium")
+async def remove_premium_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    await callback.message.answer("➖ Enter user ID:")
+    await state.set_state(Form.waiting_for_remove_premium)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_remove_premium)
+async def remove_premium_handler(message: types.Message, state: FSMContext):
+    try:
+        uid = int(message.text)
+        await remove_user_premium(uid)
+        await message.reply(f"✅ Premium removed from {uid}.")
+        try:
+            await bot.send_message(uid, "⚠️ Your premium status has been removed.", parse_mode="HTML")
+        except:
+            pass
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+# --- SET PLAN PRICE (via button) ---
+@dp.callback_query(F.data == "set_plan_price")
+async def set_plan_price_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Weekly", callback_data="set_price_weekly")],
+        [InlineKeyboardButton(text="📆 Monthly", callback_data="set_price_monthly")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
+    ])
+    await callback.message.edit_text("💰 Select plan to modify:", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("set_price_"))
+async def set_price_input(callback: types.CallbackQuery, state: FSMContext):
+    plan = callback.data.split("_")[2]
+    await state.update_data(plan_type=plan)
+    await callback.message.answer(f"Enter new price for {plan.capitalize()} plan (₹):")
+    await state.set_state(Form.waiting_for_plan_price)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_plan_price)
+async def set_price_handler(message: types.Message, state: FSMContext):
+    try:
+        price = int(message.text)
+        data = await state.get_data()
+        plan = data.get('plan_type')
+        await update_plan_price(plan, price)
+        await message.reply(f"✅ {plan.capitalize()} plan price set to ₹{price}.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+    await state.clear()
+
+# --- CREATE OFFER (via button) ---
+@dp.callback_query(F.data == "create_offer")
+async def create_offer_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_owner(callback.from_user.id):
+        await callback.answer("Owner only!", show_alert=True)
+        return
+    await callback.message.answer("🎟️ Enter offer details in format: CODE PLAN DISCOUNT% MAX_USES [EXPIRY]\nExample: OFFER10 weekly 10 5 7d")
+    await state.set_state(Form.waiting_for_offer_details)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_offer_details)
+async def create_offer_handler(message: types.Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        code = parts[0].upper()
+        plan = parts[1].lower()
+        discount = int(parts[2])
+        if discount < 0 or discount > 100:
+            await message.reply("❌ Discount must be between 0 and 100.")
+            return
+        max_uses = int(parts[3])
+        expiry = parse_time_string(parts[4]) if len(parts) > 4 else None
+        await create_discount_code(code, plan, discount, max_uses, expiry)
+        await message.reply(f"✅ Offer code {code} created for {plan} plan with {discount}% off.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
     await state.clear()
 
 # --- GENERATE RANDOM CODE ---
