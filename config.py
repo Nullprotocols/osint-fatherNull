@@ -20,6 +20,14 @@ LOG_CHANNELS = {
     'github': -1003576017442,
     'pakistan': -1003663672738,
     'ip': -1003665811220,
+    # New APIs (set log channel to 0 if not available)
+    'aadhar': 0,
+    'ration': 0,
+    'tg2num': 0,
+    'vehicle_to_number': 0,
+    'vehicle_chalan': 0,
+    'ff_info': 0,
+    'ff_ban': 0,
 }
 
 APIS = {
@@ -95,8 +103,61 @@ APIS = {
         'desc': 'IP address geolocation',
         'extra_blacklist': []
     },
+    # New APIs
+    'aadhar': {
+        'url': 'https://abduldevstorebot.up.railway.app/api/v1?key=ak_78237c25513cd1ffa6155a0f725d9cec&match={}',
+        'param': 'aadhaar number',
+        'log': LOG_CHANNELS['aadhar'],
+        'desc': 'Aadhaar info lookup',
+        'extra_blacklist': ['meta']  # removes whole "meta" block
+    },
+    'ration': {
+        'url': 'https://aadhar-to-family-demo.vercel.app/?key=DEMOOOOOO&id={}',
+        'param': 'aadhaar number',
+        'log': LOG_CHANNELS['ration'],
+        'desc': 'Ration info lookup',
+        'extra_blacklist': ['attempt', 'cached', 'owner', 'proxyUsed']
+    },
+    'tg2num': {
+        'url': 'https://tg2num-owner-api.vercel.app/?userid={}',
+        'param': 'telegram user ID',
+        'log': LOG_CHANNELS['tg2num'],
+        'desc': 'Telegram to number lookup',
+        'extra_blacklist': ['credit', 'channel', 'validity']
+    },
+    'vehicle_to_number': {
+        'url': 'https://vehicle-apiovttr.vercel.app/api.php?rc={}',
+        'param': 'vehicle number',
+        'log': LOG_CHANNELS['vehicle_to_number'],
+        'desc': 'Vehicle to number lookup',
+        'extra_blacklist': []
+    },
+    'vehicle_chalan': {
+        'url': 'https://api.b77bf911.workers.dev/vehicle?registration={}',
+        'param': 'vehicle number',
+        'log': LOG_CHANNELS['vehicle_chalan'],
+        'desc': 'Vehicle challan lookup',
+        'extra_blacklist': []
+    },
+    'ff_info': {
+        'url': 'https://abbas-apis.vercel.app/api/ff-info?uid={}',
+        'param': 'Free Fire UID',
+        'log': LOG_CHANNELS['ff_info'],
+        'desc': 'Free Fire player info',
+        'extra_blacklist': []
+    },
+    'ff_ban': {
+        'url': 'https://abbas-apis.vercel.app/api/ff-ban?uid={}',
+        'param': 'Free Fire UID',
+        'log': LOG_CHANNELS['ff_ban'],
+        'desc': 'Free Fire ban check',
+        'extra_blacklist': []
+    },
 }
 
+# Developer branding (flattened)
 DEV_USERNAME = "@Nullprotocol_X"
 POWERED_BY = "NULL PROTOCOL"
+
+# Backup channel (hardcoded)
 BACKUP_CHANNEL = -1003740236326
