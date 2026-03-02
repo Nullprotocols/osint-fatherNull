@@ -1,9 +1,7 @@
 # config.py
-# Owner and Admins (Hardcoded)
 OWNER_ID = 8104850843
-ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins (owner ID already included as owner)
+ADMIN_IDS = [5987905091]   # Owner ke alawa extra admins
 
-# Force Join Channels (IDs and Links)
 CHANNELS = [-1003090922367, -1003698567122, -1003672015073]
 CHANNEL_LINKS = [
     "https://t.me/all_data_here",
@@ -11,7 +9,6 @@ CHANNEL_LINKS = [
     "https://t.me/legend_chats_osint"
 ]
 
-# Log Channels (Hardcoded IDs)
 LOG_CHANNELS = {
     'num': -1003482423742,
     'ifsc': -1003624886596,
@@ -25,7 +22,6 @@ LOG_CHANNELS = {
     'ip': -1003665811220,
 }
 
-# APIs with per-API branding removal (extra_blacklist)
 APIS = {
     'num': {
         'url': 'https://num-free-rootx-jai-shree-ram-14-day.vercel.app/?key=lundkinger&number={}',
@@ -101,9 +97,6 @@ APIS = {
     },
 }
 
-# Developer branding (flattened)
 DEV_USERNAME = "@Nullprotocol_X"
 POWERED_BY = "NULL PROTOCOL"
-
-# Backup channel (hardcoded)
 BACKUP_CHANNEL = -1003740236326
