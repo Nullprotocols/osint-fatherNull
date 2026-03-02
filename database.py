@@ -342,6 +342,21 @@ async def delete_redeem_code(code):
         await db.execute("DELETE FROM redeem_codes WHERE code = ?", (code,))
         await db.commit()
 
+async def get_code_usage_stats(code):
+    """Get statistics for a specific redeem code."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT 
+                rc.amount, rc.max_uses, rc.current_uses,
+                COUNT(DISTINCT rl.user_id) as unique_users,
+                GROUP_CONCAT(DISTINCT rl.user_id) as user_ids
+            FROM redeem_codes rc
+            LEFT JOIN redeem_logs rl ON rc.code = rl.code
+            WHERE rc.code = ?
+            GROUP BY rc.code
+        """, (code,)) as cursor:
+            return await cursor.fetchone()
+
 # ---------- Lookup logs ----------
 async def log_lookup(user_id, api_type, input_data, result):
     """Log a lookup made by a user."""
@@ -453,6 +468,22 @@ async def get_inactive_users(days=30):
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id, username, last_active FROM users WHERE last_active < ? AND is_banned = 0 ORDER BY last_active ASC", (cutoff,)) as cursor:
+            return await cursor.fetchall()
+
+async def get_daily_stats(days=7):
+    """Get daily stats for the last N days."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT 
+                date(joined_date, 'unixepoch') as join_date,
+                COUNT(*) as new_users,
+                (SELECT COUNT(*) FROM lookup_logs 
+                 WHERE date(lookup_date) = date(joined_date, 'unixepoch')) as lookups
+            FROM users 
+            WHERE date(joined_date, 'unixepoch') >= date('now', ? || ' days')
+            GROUP BY join_date
+            ORDER BY join_date DESC
+        """, (f"-{days}",)) as cursor:
             return await cursor.fetchall()
 
 # ---------- Admin management ----------
