@@ -46,7 +46,8 @@ from database import (
     bulk_update_credits, set_user_premium, remove_user_premium, is_user_premium,
     get_plan_price, update_plan_price,
     create_discount_code, redeem_discount_code,
-    get_premium_users, get_users_with_min_credits, get_daily_stats, get_code_usage_stats
+    get_premium_users, get_users_with_min_credits, get_daily_stats, get_code_usage_stats,
+    get_discount_by_code
 )
 
 load_dotenv()
@@ -129,10 +130,7 @@ class Form(StatesGroup):
 
 # --- Helper Functions ---
 def get_branding():
-    return {
-        "developer": DEV_USERNAME,
-        "powered_by": POWERED_BY,
-    }
+    return {"developer": DEV_USERNAME, "powered_by": POWERED_BY}
 
 def clean_api_response(data, extra_blacklist=None):
     if extra_blacklist is None:
@@ -163,7 +161,7 @@ def format_json_for_display(data, max_length=3500):
     formatted = json.dumps(data, indent=4, ensure_ascii=False)
     if len(formatted) > max_length:
         truncated = formatted[:max_length]
-        truncated += f"\n\n... [Data truncated, {len(formatted) - max_length} characters more]"
+        truncated += f"\n\n... [Data truncated, {len(formatted)-max_length} characters more]"
         return truncated, True
     return formatted, False
 
@@ -237,21 +235,61 @@ def get_join_keyboard():
 
 def get_main_menu(user_id):
     keyboard = [
-        [InlineKeyboardButton(text="📱 Number", callback_data="api_num"),
-         InlineKeyboardButton(text="🏦 IFSC", callback_data="api_ifsc")],
-        [InlineKeyboardButton(text="📧 Email", callback_data="api_email"),
-         InlineKeyboardButton(text="📋 GST", callback_data="api_gst")],
-        [InlineKeyboardButton(text="🚗 Vehicle", callback_data="api_vehicle"),
-         InlineKeyboardButton(text="📮 Pincode", callback_data="api_pincode")],
-        [InlineKeyboardButton(text="📷 Instagram", callback_data="api_instagram"),
-         InlineKeyboardButton(text="🐱 GitHub", callback_data="api_github")],
-        [InlineKeyboardButton(text="🇵🇰 Pakistan", callback_data="api_pakistan"),
-         InlineKeyboardButton(text="🌐 IP Lookup", callback_data="api_ip")],
-        [InlineKeyboardButton(text="🎁 Redeem", callback_data="redeem"),
-         InlineKeyboardButton(text="🔗 Refer & earn", callback_data="refer_earn")],
-        [InlineKeyboardButton(text="👤 Profile", callback_data="profile"),
-         InlineKeyboardButton(text="💳 Buy Credits", url="https://t.me/Nullprotocol_X")],
-        [InlineKeyboardButton(text="⭐ Premium Plans", callback_data="premium_plans")]
+        # Row 1
+        [
+            InlineKeyboardButton(text="📱 Number", callback_data="api_num"),
+            InlineKeyboardButton(text="📱 Aadhaar", callback_data="api_aadhar")
+        ],
+        # Row 2
+        [
+            InlineKeyboardButton(text="📱 Ration", callback_data="api_ration"),
+            InlineKeyboardButton(text="🆔 TG2Num", callback_data="api_tg2num")
+        ],
+        # Row 3
+        [
+            InlineKeyboardButton(text="🚗 Vehicle", callback_data="api_vehicle"),
+            InlineKeyboardButton(text="🚗 Challan", callback_data="api_vehicle_chalan")
+        ],
+        # Row 4
+        [
+            InlineKeyboardButton(text="🚗 Vehicle to Number", callback_data="api_vehicle_to_number"),
+            InlineKeyboardButton(text="📧 Email", callback_data="api_email")
+        ],
+        # Row 5
+        [
+            InlineKeyboardButton(text="🏦 IFSC", callback_data="api_ifsc"),
+            InlineKeyboardButton(text="📮 Pincode", callback_data="api_pincode")
+        ],
+        # Row 6
+        [
+            InlineKeyboardButton(text="📋 GST", callback_data="api_gst"),
+            InlineKeyboardButton(text="🌐 IP Lookup", callback_data="api_ip")
+        ],
+        # Row 7
+        [
+            InlineKeyboardButton(text="🇵🇰 Pakistan", callback_data="api_pakistan"),
+            InlineKeyboardButton(text="📷 Instagram", callback_data="api_instagram")
+        ],
+        # Row 8
+        [
+            InlineKeyboardButton(text="🐱 GitHub", callback_data="api_github"),
+            InlineKeyboardButton(text="🔥 FF Info", callback_data="api_ff_info")
+        ],
+        # Row 9
+        [
+            InlineKeyboardButton(text="🚫 FF Ban", callback_data="api_ff_ban"),
+            InlineKeyboardButton(text="🎁 Redeem", callback_data="redeem")
+        ],
+        # Row 10
+        [
+            InlineKeyboardButton(text="🔗 Refer & earn", callback_data="refer_earn"),
+            InlineKeyboardButton(text="👤 Profile", callback_data="profile")
+        ],
+        # Row 11
+        [
+            InlineKeyboardButton(text="💳 Buy Credits", url="https://t.me/Nullprotocol_X"),
+            InlineKeyboardButton(text="⭐ Premium Plans", callback_data="premium_plans")
+        ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -502,11 +540,7 @@ Welcome <b>{message.from_user.first_name}</b>,
 <b>OSINT FATHER</b> - Premium Lookup Services
 Select a service from menu below:
 """
-    await message.answer(
-        welcome_msg,
-        reply_markup=get_main_menu(user_id),
-        parse_mode="HTML"
-    )
+    await message.answer(welcome_msg, reply_markup=get_main_menu(user_id), parse_mode="HTML")
     await update_last_active(user_id)
 
 @dp.callback_query(F.data == "check_join")
@@ -571,7 +605,8 @@ async def refer_earn_handler(callback: types.CallbackQuery):
     await callback.message.edit_text(msg, parse_mode="HTML", reply_markup=back_kb)
 
 @dp.callback_query(F.data == "back_home")
-async def go_home(callback: types.CallbackQuery):
+async def go_home(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(discount_percent=0, discount_code=None)
     await callback.message.edit_text("🔓 <b>Main Menu</b>", reply_markup=get_main_menu(callback.from_user.id), parse_mode="HTML")
 
 # --- REDEEM CODE ---
@@ -651,7 +686,7 @@ async def process_redeem(message: types.Message, state: FSMContext):
         )
     await state.clear()
 
-# --- API INPUT ---
+# --- API INPUT HANDLERS ---
 @dp.callback_query(F.data.startswith("api_"))
 async def ask_api_input(callback: types.CallbackQuery, state: FSMContext):
     if await is_user_banned(callback.from_user.id):
@@ -676,6 +711,14 @@ async def ask_api_input(callback: types.CallbackQuery, state: FSMContext):
         'github': "🐱 Enter GitHub Username",
         'pakistan': "🇵🇰 Enter Pakistan Mobile Number (with country code)",
         'ip': "🌐 Enter IP Address",
+        # New APIs
+        'aadhar': "📱 Enter Aadhaar Number (12 digits)",
+        'ration': "📱 Enter Aadhaar Number for Ration Info (12 digits)",
+        'tg2num': "🆔 Enter Telegram User ID",
+        'vehicle_chalan': "🚗 Enter Vehicle Number for Challan (e.g., MH01AB1234)",
+        'vehicle_to_number': "🚗 Enter Vehicle Number for Owner Details (e.g., MH01AB1234)",
+        'ff_info': "🔥 Enter Free Fire UID",
+        'ff_ban': "🚫 Enter Free Fire UID for Ban Check",
     }
     instructions = prompts.get(api_type, "Enter input")
     await callback.message.answer(
@@ -700,10 +743,14 @@ async def handle_api_input(message: types.Message, state: FSMContext):
         await process_api_call(message, api_type, message.text.strip())
     await state.clear()
 
-# --- PREMIUM PLANS ---
+# --- PREMIUM PLANS with Discount System ---
 @dp.callback_query(F.data == "premium_plans")
-async def show_premium_plans(callback: types.CallbackQuery):
+async def show_premium_plans(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    data = await state.get_data()
+    discount = data.get('discount_percent', 0)
+    discount_code = data.get('discount_code', None)
+    
     if await is_user_premium(user_id):
         await callback.message.edit_text(
             "⭐ <b>You are already a Premium User!</b>\n\n✅ Unlimited searches\n✅ No channel join",
@@ -711,34 +758,51 @@ async def show_premium_plans(callback: types.CallbackQuery):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]])
         )
         return
+    
     weekly_price = await get_plan_price('weekly') or 69
     monthly_price = await get_plan_price('monthly') or 199
+    
+    weekly_discounted = int(weekly_price * (100 - discount) / 100)
+    monthly_discounted = int(monthly_price * (100 - discount) / 100)
+    
+    if discount > 0:
+        price_text = (f"📅 Weekly Plan: ~~₹{weekly_price}~~ ➜ **₹{weekly_discounted}** ({discount}% off)\n"
+                      f"📆 Monthly Plan: ~~₹{monthly_price}~~ ➜ **₹{monthly_discounted}** ({discount}% off)\n\n"
+                      f"🎟️ Applied code: <code>{discount_code}</code>")
+        extra_buttons = [[InlineKeyboardButton(text="❌ Remove Discount", callback_data="remove_discount")]]
+    else:
+        price_text = f"📅 Weekly Plan – ₹{weekly_price}\n📆 Monthly Plan – ₹{monthly_price}\n\n"
+        extra_buttons = []
+    
     text = (
         f"⭐ <b>Premium Plans</b>\n\n"
-        f"📅 Weekly Plan – ₹{weekly_price}\n"
-        f"• 7 days unlimited access\n"
-        f"• No channel join required\n"
-        f"📆 Monthly Plan – ₹{monthly_price}\n"
-        f"• 30 days unlimited access\n\n"
+        f"{price_text}"
         f"💳 <b>How to Buy:</b>\n"
         f"Contact @Nullprotocol_X to purchase.\n"
         f"After payment, admin will activate your premium."
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📅 Buy Weekly (₹{weekly_price})", callback_data="buy_weekly")],
-        [InlineKeyboardButton(text=f"📆 Buy Monthly (₹{monthly_price})", callback_data="buy_monthly")],
+    
+    keyboard = [
+        [InlineKeyboardButton(text=f"📅 Buy Weekly (₹{weekly_discounted})", callback_data="buy_weekly")],
+        [InlineKeyboardButton(text=f"📆 Buy Monthly (₹{monthly_discounted})", callback_data="buy_monthly")],
         [InlineKeyboardButton(text="🎟️ Redeem Offer Code", callback_data="redeem_offer")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
-    ])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    ] + extra_buttons + [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @dp.callback_query(F.data.startswith("buy_"))
-async def buy_plan_handler(callback: types.CallbackQuery):
-    plan = callback.data.split("_")[1]
-    price = await get_plan_price(plan) or (69 if plan == "weekly" else 199)
+async def buy_plan_handler(callback: types.CallbackQuery, state: FSMContext):
+    plan = callback.data.split("_")[1]  # weekly or monthly
+    data = await state.get_data()
+    discount = data.get('discount_percent', 0)
+    
+    base_price = await get_plan_price(plan) or (69 if plan == "weekly" else 199)
+    final_price = int(base_price * (100 - discount) / 100)
+    
     text = (
         f"🛒 <b>Purchase {plan.capitalize()} Plan</b>\n\n"
-        f"Amount: ₹{price}\n\n"
+        f"{'Original Price: ₹' + str(base_price) + '\n' if discount > 0 else ''}"
+        f"Final Amount: ₹{final_price}\n\n"
         "📲 <b>Payment Instructions:</b>\n"
         "1. Send payment to [UPI ID / QR code]\n"
         "2. Take a screenshot\n"
@@ -772,17 +836,41 @@ async def cancel_offer_redeem(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(Form.waiting_for_offer_code)
 async def process_offer_code(message: types.Message, state: FSMContext):
     code = message.text.strip().upper()
+    discount_info = await get_discount_by_code(code)
+    if not discount_info:
+        await message.answer("❌ Invalid or expired offer code.")
+        await state.clear()
+        return
+    discount_percent, plan_id, max_uses, current_uses, expiry_minutes, created_date, is_active = discount_info
+    if not is_active or current_uses >= max_uses:
+        await message.answer("❌ Offer code is no longer valid.")
+        await state.clear()
+        return
+    if expiry_minutes:
+        created_dt = datetime.fromisoformat(created_date)
+        if datetime.now() > created_dt + timedelta(minutes=expiry_minutes):
+            await message.answer("❌ Offer code has expired.")
+            await state.clear()
+            return
+    
+    await state.update_data(discount_percent=discount_percent, discount_code=code)
     await message.answer(
-        "✅ Offer code accepted! Now select a plan to apply discount.",
+        f"✅ Offer code accepted! You got {discount_percent}% discount.\n"
+        f"Click below to view discounted plans.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📅 Weekly", callback_data="buy_weekly_offer")],
-            [InlineKeyboardButton(text="📆 Monthly", callback_data="buy_monthly_offer")]
+            [InlineKeyboardButton(text="⭐ View Premium Plans", callback_data="premium_plans")]
         ])
     )
-    await state.update_data(offer_code=code)
-    await state.clear()
+    await state.set_state(None)
 
-# --- ADMIN PANEL (MAIN) ---
+@dp.callback_query(F.data == "remove_discount")
+async def remove_discount(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(discount_percent=0, discount_code=None)
+    await callback.answer("Discount removed.")
+    await show_premium_plans(callback, state)
+
+# ========== ADMIN PANEL (Complete) ==========
+
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     admin_level = await is_user_admin(message.from_user.id)
@@ -1241,7 +1329,7 @@ async def admin_leaderboard(callback: types.CallbackQuery):
         text += f"{medal} <code>{uid}</code> - @{username or 'N/A'} - {credits} credits\n"
     await callback.message.answer(text, parse_mode="HTML")
 
-# --- PREMIUM USERS (100+ CREDITS) ---
+# --- PREMIUM USERS (100+ credits) ---
 @dp.callback_query(F.data == "admin_premiumusers")
 async def admin_premiumusers(callback: types.CallbackQuery):
     users = await get_users_with_min_credits(100)
@@ -1888,7 +1976,7 @@ async def users_pagination(callback: types.CallbackQuery):
         buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"users_{page+1}"))
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None)
 
-# --- MANUAL BACKUP (for button) ---
+# --- MANUAL BACKUP ---
 @dp.callback_query(F.data == "manual_backup")
 async def manual_backup_callback(callback: types.CallbackQuery):
     admin_level = await is_user_admin(callback.from_user.id)
